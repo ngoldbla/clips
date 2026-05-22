@@ -1,0 +1,33 @@
+import SwiftUI
+
+@main
+struct ShortcastApp: App {
+
+    @State private var settings = AppSettings()
+    @State private var modelManager = ModelManager()
+    @State private var workspace = WorkspaceModel()
+
+    var body: some Scene {
+        WindowGroup {
+            ContentView()
+                .environment(settings)
+                .environment(modelManager)
+                .environment(workspace)
+                .task {
+                    // Kick off the first-run download / model load.
+                    await modelManager.prepareIfNeeded()
+                }
+        }
+        .windowResizability(.contentMinSize)
+        .defaultSize(width: 1040, height: 700)
+        .commands {
+            CommandGroup(replacing: .newItem) {}  // single-window app
+        }
+
+        Settings {
+            SettingsView()
+                .environment(settings)
+                .environment(modelManager)
+        }
+    }
+}

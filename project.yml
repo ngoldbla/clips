@@ -1,0 +1,67 @@
+# XcodeGen project definition for Shortcast.
+# Regenerate the .xcodeproj with:  xcodegen generate
+name: Shortcast
+options:
+  bundleIdPrefix: app.shortcast
+  deploymentTarget:
+    macOS: "15.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+
+packages:
+  # Vendored: native Gemma 4 multimodal inference (MIT). Source lives in Vendor/.
+  # Pulls in mlx-swift, mlx-swift-lm, swift-transformers transitively.
+  Gemma4Swift:
+    path: Vendor/gemma-4-swift-mlx
+
+targets:
+  Shortcast:
+    type: application
+    platform: macOS
+    sources:
+      - path: Shortcast
+    dependencies:
+      - package: Gemma4Swift
+        product: Gemma4Swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.shortcast.Shortcast
+        PRODUCT_NAME: Shortcast
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: Shortcast/Info.plist
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGN_STYLE: Manual
+        ENABLE_HARDENED_RUNTIME: NO
+        SWIFT_VERSION: "6.0"
+        SWIFT_STRICT_CONCURRENCY: complete
+        DEAD_CODE_STRIPPING: YES
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        COMBINE_HIDPI_IMAGES: YES
+        ENABLE_PREVIEWS: YES
+        MACOSX_DEPLOYMENT_TARGET: "15.0"
+
+  # Developer-only command-line probe. Runs the real generation path
+  # (MediaExtractor → Gemma4Engine → JSONVariantParser) headlessly.
+  shortcast-probe:
+    type: tool
+    platform: macOS
+    sources:
+      - path: Probe
+      - path: Shortcast/Models/PostVariant.swift
+      - path: Shortcast/Models/VideoJob.swift
+      - path: Shortcast/Models/String+Trimmed.swift
+      - path: Shortcast/Services/MediaExtractor.swift
+      - path: Shortcast/Services/PromptBuilder.swift
+      - path: Shortcast/Services/JSONVariantParser.swift
+    dependencies:
+      - package: Gemma4Swift
+        product: Gemma4Swift
+    settings:
+      base:
+        PRODUCT_NAME: shortcast-probe
+        SWIFT_VERSION: "6.0"
+        MACOSX_DEPLOYMENT_TARGET: "15.0"
+        GENERATE_INFOPLIST_FILE: YES

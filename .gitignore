@@ -1,0 +1,26 @@
+# Xcode / build
+build/
+DerivedData/
+.build/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+*.xcuserstate
+*.moved-aside
+
+# XcodeGen generates this from project.yml — do not commit
+Shortcast.xcodeproj/
+
+# Swift Package Manager
+.swiftpm/
+Package.resolved
+
+# Vendored dependency: keep source, drop its git history & samples
+Vendor/gemma-4-swift-mlx/.git/
+Vendor/gemma-4-swift-mlx/.build/
+
+# macOS
+.DS_Store
+
+# Distribution artifacts
+*.dmg
+dist/

@@ -1,0 +1,74 @@
+import Foundation
+import Gemma4Swift
+import Observation
+
+/// Owns the Gemma 4 model lifecycle: first-run download, load, and the loaded
+/// engine. Drives the download UI through `phase`.
+@MainActor
+@Observable
+final class ModelManager {
+
+    /// The model Shortcast ships with: Gemma 4 E4B, 4-bit (~5 GB).
+    static let model: Gemma4Pipeline.Model = .e4b4bit
+
+    enum Phase: Equatable {
+        case idle
+        case downloading(fraction: Double, detail: String)
+        case loading
+        case ready
+        case failed(String)
+    }
+
+    private(set) var phase: Phase = .idle
+    private(set) var engine: Gemma4Engine?
+
+    // MARK: - Environment facts
+
+    var systemRAMGB: Int { Gemma4ModelCache.systemRAMGB }
+    var recommendedRAMGB: Int { Self.model.recommendedRAMGB }
+    var hasEnoughRAM: Bool { systemRAMGB >= recommendedRAMGB }
+    var isModelDownloaded: Bool { Gemma4ModelCache.isDownloaded(Self.model) }
+    var estimatedDownloadGB: Int { Int(Self.model.estimatedSizeGB.rounded()) }
+
+    var isReady: Bool { engine != nil }
+    var isBusy: Bool {
+        switch phase {
+        case .downloading, .loading: true
+        default: false
+        }
+    }
+
+    // MARK: - Lifecycle
+
+    /// Downloads (if needed) and loads the model. Safe to call repeatedly — it
+    /// no-ops once the engine is ready or while work is already in flight.
+    func prepareIfNeeded() async {
+        guard engine == nil, !isBusy else { return }
+        phase = isModelDownloaded ? .loading : .downloading(fraction: 0, detail: "Starting…")
+
+        do {
+            let prepared = try await Gemma4Engine.prepare(model: Self.model) { [weak self] stage in
+                Task { @MainActor in
+                    guard let self else { return }
+                    switch stage {
+                    case .downloading(let progress):
+                        self.phase = .downloading(
+                            fraction: progress.fraction,
+                            detail: progress.formattedProgress)
+                    case .loading:
+                        self.phase = .loading
+                    }
+                }
+            }
+            engine = prepared
+            phase = .ready
+        } catch {
+            phase = .failed(error.localizedDescription)
+        }
+    }
+
+    /// Clears a failed state so the user can retry.
+    func resetForRetry() {
+        if case .failed = phase { phase = .idle }
+    }
+}
