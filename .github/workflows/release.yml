@@ -12,7 +12,10 @@ permissions:
 
 jobs:
   build-dmg:
-    runs-on: macos-15
+    # macos-26 ships Xcode 26 — required because the vendored gemma-4-swift-mlx
+    # uses Swift expressions that the Xcode 16.4 compiler on macos-15 fails to
+    # type-check in reasonable time (LoRA / TurboQuant). Newer Swift is fine.
+    runs-on: macos-26
     steps:
       - name: Checkout
         uses: actions/checkout@v4
