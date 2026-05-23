@@ -13,14 +13,17 @@ struct ResultsView: View {
             header
             Divider()
 
-            ScrollView {
-                HStack(alignment: .top, spacing: 16) {
-                    ForEach($workspace.variants) { $variant in
-                        PostCardView(variant: $variant)
-                            .frame(maxWidth: .infinity)
+            if let videoURL = workspace.job?.url {
+                ScrollView {
+                    HStack(alignment: .top, spacing: 18) {
+                        ForEach($workspace.variants) { $variant in
+                            PostPreviewCard(variant: $variant, videoURL: videoURL)
+                                .frame(maxWidth: .infinity)
+                        }
                     }
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 22)
                 }
-                .padding(20)
             }
 
             Divider()
@@ -42,7 +45,7 @@ struct ResultsView: View {
                     .font(.headline)
                     .lineLimit(1)
                 HStack(spacing: 6) {
-                    Text("Three drafts ready — edit anything before publishing")
+                    Text("Tap any line on a preview to edit it")
                     if let language = workspace.detectedLanguage, !language.isEmpty {
                         Text("·  \(language.uppercased())")
                     }

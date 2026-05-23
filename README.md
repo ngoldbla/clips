@@ -1,116 +1,223 @@
+<div align="center">
+
 # Shortcast
 
-**Drop in a short video. Get three ready-to-post captions. Publish everywhere at once.**
+**One short video → ready-to-post copy for TikTok, Instagram Reels and YouTube Shorts.**
+**Generated fully on your Mac. Open-source.**
 
-Shortcast is a native macOS app that turns a short vertical video — a TikTok, a
-Reel, a Short — into platform-tailored copy for **TikTok**, **Instagram Reels**
-and **YouTube Shorts**. You review the three drafts, edit anything you want, and
-publish to all three with one button.
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+![Platform](https://img.shields.io/badge/macOS-15%2B-black?logo=apple)
+![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-required-1d1d1f)
+![Swift 6](https://img.shields.io/badge/Swift-6.0-F05138?logo=swift&logoColor=white)
+![Model](https://img.shields.io/badge/Gemma_4_E4B-on--device-4285F4)
 
-The video never leaves your Mac during processing. Everything is generated
-on-device by **Gemma 4 E4B**, Google's open multimodal model, running on Apple
-Silicon through [MLX](https://github.com/ml-explore/mlx-swift). No Python, no
-Electron, no embedded runtime — just Swift.
+<br />
 
-> Status: early. v0.1 — built in the open.
+<img src="assets/demo.gif" alt="Shortcast demo — drop a short video, get three editable platform previews" width="720" />
 
-## How it works
+<br />
 
-1. **Drop a video** onto the window (up to ~60 seconds).
-2. Shortcast samples frames and extracts the audio with **AVFoundation**, then
-   hands them to **Gemma 4 E4B**.
-3. The model watches and listens, then writes a hook, a caption and hashtags
-   for each of the three platforms — guided by a built-in copywriting skill
-   (`social-content-coach`) and, optionally, examples of your own style.
-4. You get **three editable cards**. Tweak anything.
-5. Press **Publish**. Shortcast sends the original video and your copy to all
-   three networks through the [Upload-Post](https://upload-post.com) API.
+<sub>Drop a clip → it watches and listens → three editable phone-style previews → publish to all three at once.</sub>
 
-Processing a clip typically takes **10–30 seconds**.
+</div>
 
-## Requirements
+---
 
-- macOS 15 (Sequoia) or later
-- Apple Silicon (M1 or newer)
-- ~16 GB of memory recommended (Gemma 4 E4B uses ~7 GB while running)
-- ~6 GB of free disk space for the model
-- An [Upload-Post](https://upload-post.com) account to publish (free tier available)
+## What it does
+
+You drop a short vertical video onto the window. About 30 seconds later, Shortcast gives
+you **three editable post previews** — one for **TikTok**, one for **Instagram Reels**,
+one for **YouTube Shorts** — each rendered as a phone mockup with **your video playing
+behind the real platform UI**. Tap any line of caption to edit it. Hit Publish and the
+same clip goes out to all three networks with the right copy for each.
+
+What's different about Shortcast:
+
+- 🛰️ **Nothing leaves your Mac during processing.** No cloud model, no upload.
+  Your video is only sent to a network when you choose to publish it.
+- 🧠 **Real multimodal understanding** — Gemma 4 E4B watches the frames *and* hears
+  the audio. The captions actually reflect what's in the clip.
+- ✏️ **Edit on the preview itself.** No abstract form — you see the post like it'll
+  look on the feed, and type directly on it.
+- 🎯 **Tuned per platform.** TikTok gets punchy. Instagram gets storytelling and 20–30
+  hashtags. YouTube gets short, search-friendly titles. Driven by a bundled writing
+  skill ([`social-content-coach.md`](Shortcast/Resources/social-content-coach.md)).
+- 🪶 **No Python. No Electron. No embedded runtime.** Just Swift, MLX, AVFoundation.
+  The whole app weighs ~50 MB; the model downloads on first launch.
+
+## How the video processing works
+
+```
+  ┌──────────────────────────────────────────────────────────────────┐
+  │  YOUR MAC — nothing leaves until you press Publish               │
+  │                                                                  │
+  │   drop ┐                                                         │
+  │        ▼                                                         │
+  │   ┌──────────────┐   frames   ┌─────────────────┐                │
+  │   │ AVFoundation │──────────► │                 │   JSON with    │
+  │   │              │   audio    │ Gemma 4 E4B     │──► 3 variants  │
+  │   │ frame sampler│──────────► │ via MLX (Metal) │                │
+  │   │ + audio mux  │   prompt   │                 │                │
+  │   └──────────────┘─────────►  └─────────────────┘                │
+  │        ▲                                                         │
+  │        │                              │                          │
+  │        │                              ▼                          │
+  │        │                      ┌─────────────────┐                │
+  │        │                      │ 3 phone-style   │  edit in       │
+  │        │                      │ post previews   │  place         │
+  │        └──── original video ──┤ (video + chrome │                │
+  │                               │  + your copy)   │                │
+  │                               └─────────────────┘                │
+  └──────────────────────────────────────────────────────────────────┘
+                                          │  press Publish
+                                          ▼
+                                  ┌─────────────────┐
+                                  │   Upload-Post   │   one HTTP call,
+                                  │       API       │   three networks
+                                  └─────────────────┘
+```
+
+Concretely, when you drop a clip:
+
+1. **AVFoundation** samples ~16 keyframes evenly across the video and exports the audio
+   track to a small temp file. Frame extraction is built into the
+   [vendored Gemma 4 runtime](Vendor/gemma-4-swift-mlx); we only need to peel off the
+   audio.
+2. The frames, audio, and a multi-section prompt — your bundled writing skill, the
+   creator's style examples (optional), a language hint, and a strict JSON schema —
+   are handed to **Gemma 4 E4B**.
+3. **MLX-Swift** runs the model on the Apple Silicon GPU and Neural Engine. The
+   "audio tower" hears up to 30 seconds; the vision encoder processes frames at
+   ~1 fps with timestamps.
+4. The model returns a single JSON object with three platform variants. A
+   tolerant parser strips any code fences or thinking tokens and builds the
+   structured result.
+5. SwiftUI renders the **three phone mockups** — your video looping behind the real
+   platform chrome (action rail, follow/subscribe button, music disc, dynamic island),
+   with the hook/caption/hashtags as editable text overlays.
+6. On **Publish**, the original video and your per-platform copy are sent in a single
+   multipart `POST` to [Upload-Post](https://upload-post.com), which fans it out to
+   TikTok, Instagram and YouTube. TikTok lands as a draft by default so you can finish
+   in-app.
 
 ## Install
 
+> Releases are unsigned, open-source binaries. macOS will flag them the first time —
+> that's normal.
+
 1. Download `Shortcast.dmg` from the [latest release](../../releases/latest).
-2. Open the `.dmg` and drag **Shortcast** to your Applications folder.
-3. The app is **not signed with an Apple Developer ID** yet, so macOS will block
-   the first launch. To allow it:
-   - Double-click Shortcast. macOS says it can't verify the developer.
-   - Open **System Settings → Privacy & Security**, scroll down, and click
-     **Open Anyway** next to the Shortcast message.
-   - Confirm once more. macOS remembers the choice from then on.
-   - *(Power-user alternative: `xattr -dr com.apple.quarantine /Applications/Shortcast.app`.)*
+2. Open the DMG and drag **Shortcast** to your Applications folder.
+3. Double-click Shortcast. macOS says it can't verify the developer.
+4. Open **System Settings → Privacy & Security**, scroll to the message about Shortcast,
+   and click **Open Anyway**. Confirm once. macOS remembers from now on.
 
-This is normal for open-source Mac apps. Code signing and notarization are
-planned once the project settles.
+<details>
+<summary>Power-user shortcut</summary>
 
-## First run
+```bash
+xattr -dr com.apple.quarantine /Applications/Shortcast.app
+```
+</details>
 
-- On first launch Shortcast downloads **Gemma 4 E4B** (~5 GB) with a progress
-  bar. This happens once; afterwards the app works fully offline for processing.
-- Open **Settings** (⌘,) and add your **Upload-Post API key** and **profile
-  name**:
-  - Sign up at [upload-post.com](https://upload-post.com), then connect TikTok,
-    Instagram and YouTube in the [dashboard](https://app.upload-post.com).
-  - The **profile name** is the one from *Manage Users* — not a social handle.
-  - Generate an API key in the dashboard settings.
-- Optionally set a caption **language** (otherwise it matches the video) and
-  paste a few **style examples** so the copy sounds like you.
+### First run
+
+- Shortcast downloads **Gemma 4 E4B** (~5 GB) with a visible progress bar. Happens once,
+  then it works offline for analysis.
+- Open **Settings** (⌘,) and add your [Upload-Post](https://upload-post.com) **API key**
+  and **profile name** (the one from *Manage Users*, not your social handle).
+- Optionally set a caption language and paste a few of your own captions as style
+  examples — the model will match your voice.
+
+You can generate posts without Upload-Post; only publishing needs it.
 
 ## Build from source
 
-You need Xcode 16+ and [XcodeGen](https://github.com/yonaskolb/XcodeGen).
+You need **Xcode 16+** and [XcodeGen](https://github.com/yonaskolb/XcodeGen).
+On Apple Silicon. macOS 15+.
 
 ```bash
 brew install xcodegen
-git clone https://github.com/<owner>/shortcast
+git clone https://github.com/mutonby/shortcast
 cd shortcast
 xcodegen generate
 open Shortcast.xcodeproj
 ```
 
-Build and run the **Shortcast** scheme. The Xcode project is generated from
-`project.yml` and is intentionally not committed.
+Build and run the **Shortcast** scheme. The `.xcodeproj` is generated from
+`project.yml` and intentionally not committed — `xcodegen` regenerates it.
 
-Release `.dmg` builds are produced automatically by GitHub Actions
-(`.github/workflows/release.yml`) whenever a `v*` tag is pushed.
+There's also a headless dev tool, `shortcast-probe`, that exercises the real
+generation path on a chosen video:
+
+```bash
+xcodebuild -scheme shortcast-probe -configuration Debug build -derivedDataPath build
+./build/Build/Products/Debug/shortcast-probe path/to/clip.mp4
+```
+
+### Release DMG
+
+`.github/workflows/release.yml` builds an unsigned `.dmg` and attaches it to the
+GitHub Release whenever a `v*` tag is pushed:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
 
 ## The stack
 
-| Piece            | What                                                              |
-|------------------|-------------------------------------------------------------------|
-| UI               | SwiftUI, native macOS                                             |
-| On-device model  | Gemma 4 E4B (4-bit), multimodal — text + vision + audio + video   |
-| Inference        | [MLX](https://github.com/ml-explore/mlx-swift) on Apple Silicon   |
+| Layer            | Used                                                                  |
+|------------------|-----------------------------------------------------------------------|
+| UI               | SwiftUI · AVKit                                                       |
+| On-device model  | Gemma 4 E4B (4-bit), text + vision + audio + video                    |
+| Inference        | [MLX](https://github.com/ml-explore/mlx-swift) (Metal, Neural Engine) |
 | Gemma 4 runtime  | [gemma-4-swift-mlx](https://github.com/VincentGourbin/gemma-4-swift-mlx), vendored in `Vendor/` |
-| Media extraction | AVFoundation (frame sampling + audio)                             |
-| Publishing       | [Upload-Post](https://upload-post.com) API                        |
+| Media extraction | AVFoundation (frame sampling + audio export)                          |
+| Publishing       | [Upload-Post](https://upload-post.com) API                            |
+| Secrets          | macOS Keychain                                                        |
+| Build            | XcodeGen · GitHub Actions                                             |
 
 ## Privacy
 
-Your video is processed **entirely on your Mac**. Nothing is uploaded during
-analysis. The video and your captions are sent to a network only when you press
-**Publish**, and only to the Upload-Post API so it can post them for you.
+The video itself is **not** uploaded during analysis. Everything — frame sampling,
+audio mel-spectrogram, model inference, JSON parsing — runs inside the app, on your
+Mac. The only outbound traffic before you publish is:
 
-## Known limitations (v0.1)
+- **First run only**: a one-time download of the Gemma 4 weights from Hugging Face.
+- **On Publish**: a single multipart upload to Upload-Post, with your video and the
+  copy you approved.
 
-- Gemma 4's audio encoder hears up to **30 seconds**. For longer clips the model
-  still samples frames across the whole video, but only the first 30s of audio.
-- The app is unsigned (see *Install*).
-- One video at a time — no history, no batch. By design, for now.
+Your API key lives in the macOS Keychain, never in plist or settings files.
+
+## Known limitations
+
+- Gemma 4's audio encoder hears the **first 30 seconds**. Frames cover the whole clip,
+  but if the punchline is at second 50 in audio, the model won't hear it.
+- The app is **unsigned** (see *Install*). Code signing + notarization will come once
+  the project stabilises.
+- One video at a time — no history, no batch processing, no in-app account linking.
+  By design, for now.
+- Upload-Post free tier limits monthly uploads. One publish to three networks counts
+  as three.
+
+## Acknowledgements
+
+- **Google** for the Gemma 4 family — open weights with full multimodal capability are
+  what makes this app possible.
+- **Apple's MLX team** for [MLX](https://github.com/ml-explore/mlx-swift) and
+  [mlx-swift-lm](https://github.com/ml-explore/mlx-swift-lm).
+- **Vincent Gourbin** for [gemma-4-swift-mlx](https://github.com/VincentGourbin/gemma-4-swift-mlx),
+  the native Gemma 4 runtime we vendor.
+- **Upload-Post** for the cross-platform publishing API.
 
 ## License
 
 Apache License 2.0 — see [LICENSE](LICENSE).
 
-The vendored `gemma-4-swift-mlx` runtime is MIT-licensed; see
-[NOTICE](NOTICE) for full third-party attribution. Gemma 4 model weights are
-downloaded from Hugging Face at first run and are subject to
+Third-party components are listed in [NOTICE](NOTICE). The vendored
+`gemma-4-swift-mlx` runtime is MIT-licensed; the Gemma 4 weights are governed by
 [Google's Gemma Terms of Use](https://ai.google.dev/gemma/terms).
+
+<div align="center">
+<sub>Built in the open.</sub>
+</div>

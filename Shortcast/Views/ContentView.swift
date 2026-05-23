@@ -14,11 +14,15 @@ struct ContentView: View {
         ZStack {
             if modelManager.isReady {
                 workspaceContent
+                    .transition(.opacity)
             } else {
                 ModelDownloadView()
+                    .transition(.opacity)
             }
         }
-        .frame(minWidth: 920, minHeight: 600)
+        .animation(.smooth(duration: 0.32), value: modelManager.isReady)
+        .animation(.smooth(duration: 0.32), value: workspace.phase)
+        .frame(minWidth: 1000, minHeight: 720)
         .dropDestination(for: URL.self) { urls, _ in
             guard modelManager.isReady,
                   workspace.phase != .processing,

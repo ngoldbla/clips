@@ -19,7 +19,7 @@ struct ShortcastApp: App {
                 }
         }
         .windowResizability(.contentMinSize)
-        .defaultSize(width: 1040, height: 700)
+        .defaultSize(width: 1180, height: 880)
         .commands {
             CommandGroup(replacing: .newItem) {}  // single-window app
         }
