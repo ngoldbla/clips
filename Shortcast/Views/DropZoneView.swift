@@ -11,8 +11,19 @@ struct DropZoneView: View {
     @State private var showingImporter = false
 
     var body: some View {
+        @Bindable var workspace = workspace
+
         VStack(spacing: 18) {
             Spacer()
+
+            Picker("Mode", selection: $workspace.inputMode) {
+                ForEach(WorkspaceModel.InputMode.allCases) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(maxWidth: 460)
 
             dropArea
 
@@ -42,16 +53,17 @@ struct DropZoneView: View {
 
     private var dropArea: some View {
         VStack(spacing: 14) {
-            Image(systemName: "film.stack")
+            Image(systemName: workspace.inputMode.symbol)
                 .font(.system(size: 46, weight: .light))
                 .foregroundStyle(isDropTargeted ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
 
-            Text("Drop a short video here")
+            Text(workspace.inputMode.dropTitle)
                 .font(.title2.weight(.semibold))
 
-            Text("Up to 60 seconds — a TikTok, Reel or Short")
+            Text(workspace.inputMode.dropSubtitle)
                 .font(.callout)
                 .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
 
             Button("Choose video…") { showingImporter = true }
                 .controlSize(.large)

@@ -22,6 +22,10 @@ final class ModelManager {
     private(set) var phase: Phase = .idle
     private(set) var engine: Gemma4Engine?
 
+    /// The "Director" — Qwen 3.5 9B, finds viral moments from a transcript.
+    /// Loaded lazily on the first long-video drop, not at app launch.
+    let momentFinder = MomentFinderService()
+
     // MARK: - Environment facts
 
     var systemRAMGB: Int { Gemma4ModelCache.systemRAMGB }
@@ -29,6 +33,11 @@ final class ModelManager {
     var hasEnoughRAM: Bool { systemRAMGB >= recommendedRAMGB }
     var isModelDownloaded: Bool { Gemma4ModelCache.isDownloaded(Self.model) }
     var estimatedDownloadGB: Int { Int(Self.model.estimatedSizeGB.rounded()) }
+
+    /// True when there's room to keep both Gemma and Qwen resident at once.
+    /// Below this we load them sequentially (free the Director before Gemma
+    /// captioning) to avoid swapping/OOM.
+    var canKeepBothResident: Bool { systemRAMGB >= 24 }
 
     var isReady: Bool { engine != nil }
     var isBusy: Bool {
@@ -70,5 +79,18 @@ final class ModelManager {
     /// Clears a failed state so the user can retry.
     func resetForRetry() {
         if case .failed = phase { phase = .idle }
+    }
+
+    // MARK: - Director (moment finder)
+
+    /// Loads Qwen 3.5 9B if needed. Called from the shorts pipeline, not launch.
+    func prepareDirectorIfNeeded() async {
+        await momentFinder.prepareIfNeeded()
+    }
+
+    /// Frees the Director to make room for the Gemma copywriter on tight RAM.
+    func freeDirectorIfMemoryTight() {
+        guard !canKeepBothResident else { return }
+        momentFinder.unload()
     }
 }

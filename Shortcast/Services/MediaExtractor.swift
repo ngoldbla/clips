@@ -4,6 +4,7 @@ import Foundation
 enum MediaExtractorError: LocalizedError {
     case noVideoTrack
     case audioExportFailed(String)
+    case clipExportFailed(String)
 
     var errorDescription: String? {
         switch self {
@@ -11,6 +12,8 @@ enum MediaExtractorError: LocalizedError {
             return "That file doesn't contain a video track."
         case .audioExportFailed(let detail):
             return "Couldn't extract the audio track: \(detail)"
+        case .clipExportFailed(let detail):
+            return "Couldn't cut the clip: \(detail)"
         }
     }
 }
@@ -31,9 +34,11 @@ enum MediaExtractor {
         return VideoJob(url: url, durationSeconds: CMTimeGetSeconds(duration))
     }
 
-    /// Extracts the audio track to a temporary `.m4a`, capped a little past the
-    /// model's 30s audio window. Returns `nil` if the video has no audio track.
-    static func extractAudio(from url: URL, maxSeconds: Double = 35) async throws -> URL? {
+    /// Extracts the audio track to a temporary `.m4a`. `maxSeconds` caps the
+    /// export (default 35s, a little past Gemma's 30s audio window); pass `nil`
+    /// to export the full track (used for transcribing a long video). Returns
+    /// `nil` if the video has no audio track.
+    static func extractAudio(from url: URL, maxSeconds: Double? = 35) async throws -> URL? {
         let asset = AVURLAsset(url: url)
         let audioTracks = try await asset.loadTracks(withMediaType: .audio)
         guard !audioTracks.isEmpty else { return nil }
@@ -47,9 +52,11 @@ enum MediaExtractor {
         let outputURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("shortcast-audio-\(UUID().uuidString).m4a")
 
-        let duration = CMTimeGetSeconds(try await asset.load(.duration))
-        let cap = CMTime(seconds: min(duration, maxSeconds), preferredTimescale: 600)
-        export.timeRange = CMTimeRange(start: .zero, duration: cap)
+        if let maxSeconds {
+            let duration = CMTimeGetSeconds(try await asset.load(.duration))
+            let cap = CMTime(seconds: min(duration, maxSeconds), preferredTimescale: 600)
+            export.timeRange = CMTimeRange(start: .zero, duration: cap)
+        }
 
         do {
             try await export.export(to: outputURL, as: .m4a)
@@ -57,5 +64,41 @@ enum MediaExtractor {
             throw MediaExtractorError.audioExportFailed(error.localizedDescription)
         }
         return outputURL
+    }
+
+    /// Cuts `[start, start+duration]` out of a video into a temporary `.mp4`.
+    /// Tries a passthrough export first (no re-encode → near-instant, original
+    /// quality); falls back to a re-encode if the source codec/container can't
+    /// passthrough. Keeps the original aspect ratio (9:16 reframing is a future
+    /// enhancement). `.mp4` matches the content type Upload-Post expects.
+    static func cutClip(from url: URL, start: Double, duration: Double) async throws -> URL {
+        let asset = AVURLAsset(url: url)
+        let videoTracks = try await asset.loadTracks(withMediaType: .video)
+        guard !videoTracks.isEmpty else { throw MediaExtractorError.noVideoTrack }
+
+        let range = CMTimeRange(
+            start: CMTime(seconds: start, preferredTimescale: 600),
+            duration: CMTime(seconds: duration, preferredTimescale: 600))
+
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("shortcast-clip-\(UUID().uuidString).mp4")
+
+        for preset in [AVAssetExportPresetPassthrough, AVAssetExportPresetHighestQuality] {
+            guard let export = AVAssetExportSession(asset: asset, presetName: preset) else {
+                continue
+            }
+            export.timeRange = range
+            do {
+                try await export.export(to: outputURL, as: .mp4)
+                return outputURL
+            } catch {
+                // Passthrough can reject some codecs/ranges; try the re-encode.
+                try? FileManager.default.removeItem(at: outputURL)
+                if preset == AVAssetExportPresetHighestQuality {
+                    throw MediaExtractorError.clipExportFailed(error.localizedDescription)
+                }
+            }
+        }
+        throw MediaExtractorError.clipExportFailed("no usable export preset")
     }
 }

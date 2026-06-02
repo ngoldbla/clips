@@ -7,6 +7,9 @@ struct PostPreviewCard: View {
 
     @Binding var variant: PostVariant
     let videoURL: URL
+    /// When set, a visual approximation of the burned-in text hook is shown near
+    /// the top of the preview (the real overlay is rendered at publish time).
+    var overlayHook: String? = nil
 
     var body: some View {
         VStack(spacing: 12) {
@@ -17,7 +20,7 @@ struct PostPreviewCard: View {
             .font(.subheadline.weight(.semibold))
             .foregroundStyle(variant.platform.tint)
 
-            PhoneMockup(variant: $variant, videoURL: videoURL)
+            PhoneMockup(variant: $variant, videoURL: videoURL, overlayHook: overlayHook)
         }
     }
 }
@@ -27,6 +30,7 @@ struct PostPreviewCard: View {
 private struct PhoneMockup: View {
     @Binding var variant: PostVariant
     let videoURL: URL
+    var overlayHook: String? = nil
 
     var body: some View {
         GeometryReader { geo in
@@ -46,6 +50,7 @@ private struct PhoneMockup: View {
 
                 PhoneScreen(variant: $variant,
                             videoURL: videoURL,
+                            overlayHook: overlayHook,
                             w: w - bezel * 2)
                     .clipShape(RoundedRectangle(cornerRadius: bodyRadius - bezel * 0.7,
                                                 style: .continuous))
@@ -59,6 +64,7 @@ private struct PhoneMockup: View {
 private struct PhoneScreen: View {
     @Binding var variant: PostVariant
     let videoURL: URL
+    var overlayHook: String? = nil
     let w: CGFloat
 
     var body: some View {
@@ -72,6 +78,24 @@ private struct PhoneScreen: View {
                            startPoint: UnitPoint(x: 0.5, y: 0.42), endPoint: .bottom)
 
             PlatformChrome(variant: $variant, w: w)
+
+            // Burned-in text hook (visual approximation of the published render).
+            if let overlayHook, !overlayHook.trimmingCharacters(in: .whitespaces).isEmpty {
+                VStack(spacing: 0) {
+                    Spacer().frame(height: w * 0.30)
+                    Text(overlayHook)
+                        .font(.system(size: w * 0.058, weight: .heavy))
+                        .foregroundStyle(.white)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, w * 0.045)
+                        .padding(.vertical, w * 0.03)
+                        .background(.black.opacity(0.55),
+                                    in: RoundedRectangle(cornerRadius: w * 0.035))
+                        .padding(.horizontal, w * 0.06)
+                    Spacer()
+                }
+                .allowsHitTesting(false)
+            }
 
             // Dynamic Island
             VStack {

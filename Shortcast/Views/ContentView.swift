@@ -25,7 +25,7 @@ struct ContentView: View {
         .frame(minWidth: 1000, minHeight: 720)
         .dropDestination(for: URL.self) { urls, _ in
             guard modelManager.isReady,
-                  workspace.phase != .processing,
+                  !workspace.isBusy,
                   let url = urls.first(where: { $0.isFileURL })
             else { return false }
             startProcessing(url)
@@ -49,6 +49,10 @@ struct ContentView: View {
             ProcessingView()
         case .results:
             ResultsView()
+        case .transcribing, .findingMoments:
+            ShortsProgressView()
+        case .shortsResults:
+            ShortsResultsView()
         }
     }
 

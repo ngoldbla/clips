@@ -62,10 +62,56 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Section("Model") {
-                LabeledContent("Model", value: "Gemma 4 E4B · 4-bit")
-                LabeledContent("This Mac's memory", value: "\(modelManager.systemRAMGB) GB")
-                LabeledContent("Status", value: modelStatus)
+            Section("How a long video becomes shorts") {
+                pipelineRole(
+                    step: "1", icon: "waveform",
+                    title: "Transcribe",
+                    model: "WhisperKit · large-v3-turbo",
+                    detail: "Turns the audio into text. Runs only when the video has no .srt/.vtt next to it.",
+                    status: nil)
+                pipelineRole(
+                    step: "2", icon: "wand.and.stars",
+                    title: "Find the viral moments",
+                    model: "Qwen 3.5 9B",
+                    detail: "Reads the whole transcript and picks the best clips. Always Qwen — not changeable.",
+                    status: directorStatus)
+                pipelineRole(
+                    step: "3", icon: "text.bubble",
+                    title: "Write the captions",
+                    model: settings.copywriterModel.displayName,
+                    detail: "You choose this one ↓",
+                    status: settings.copywriterModel == .gemmaE4B ? modelStatus : directorStatus)
+            }
+
+            Section("Caption writer") {
+                Picker("Model", selection: $settings.copywriterModel) {
+                    ForEach(AppSettings.CopywriterModel.allCases) { model in
+                        Text(model.displayName).tag(model)
+                    }
+                }
+                Text(settings.copywriterModel.tagline)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("Applies to shorts cut from a long video. Captioning a single short video always uses Gemma (it watches the clip directly).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if settings.copywriterModel == .gemmaE4B && modelManager.systemRAMGB < 24 {
+                    Label("On this Mac, Shortcast frees the moment-finder before captioning to stay within memory.",
+                          systemImage: "memorychip")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Section("Text hook overlay") {
+                Toggle("Burn an AI text hook into each short", isOn: $settings.burnHookOverlay)
+                Text("Shows a short hook over the top of each clip for the first few seconds. The default for new shorts — you can flip it per clip. The text is rendered into the video when you publish.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("This Mac") {
+                LabeledContent("Memory", value: "\(modelManager.systemRAMGB) GB")
             }
         }
         .formStyle(.grouped)
@@ -108,6 +154,29 @@ struct SettingsView: View {
         }
     }
 
+    @ViewBuilder
+    private func pipelineRole(step: String, icon: String, title: String,
+                             model: String, detail: String, status: String?) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: icon)
+                .font(.title3)
+                .foregroundStyle(.tint)
+                .frame(width: 26)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text("\(step). \(title)").font(.callout.weight(.semibold))
+                    Spacer()
+                    Text(model).font(.callout).foregroundStyle(.secondary)
+                }
+                Text(detail).font(.caption).foregroundStyle(.secondary)
+                if let status {
+                    Text(status).font(.caption2).foregroundStyle(.tertiary)
+                }
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
     private var modelStatus: String {
         switch modelManager.phase {
         case .idle:                          "Not loaded"
@@ -115,6 +184,16 @@ struct SettingsView: View {
         case .loading:                       "Loading…"
         case .ready:                         "Ready"
         case .failed:                        "Failed to load"
+        }
+    }
+
+    private var directorStatus: String {
+        switch modelManager.momentFinder.phase {
+        case .idle:                        "Loads on first long video"
+        case .downloading(let fraction):   "Downloading \(Int(fraction * 100))%"
+        case .loading:                     "Loading…"
+        case .ready:                       "Ready"
+        case .failed:                      "Failed to load"
         }
     }
 }

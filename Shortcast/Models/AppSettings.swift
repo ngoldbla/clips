@@ -9,6 +9,29 @@ import Observation
 @Observable
 final class AppSettings {
 
+    /// Which model writes each clip's captions (the "Copywriter"). The Director
+    /// that finds moments is always Qwen 3.5 9B and is not selectable.
+    enum CopywriterModel: String, CaseIterable, Identifiable, Sendable {
+        case gemmaE4B = "gemma"
+        case qwen35_9b = "qwen"
+
+        var id: String { rawValue }
+
+        var displayName: String {
+            switch self {
+            case .gemmaE4B:  "Gemma 4 E4B · 4-bit"
+            case .qwen35_9b: "Qwen 3.5 9B"
+            }
+        }
+
+        var tagline: String {
+            switch self {
+            case .gemmaE4B:  "Watches each clip (frames + audio). Lighter on memory."
+            case .qwen35_9b: "Writes from the clip's transcript. Reuses the Director — one model for everything."
+            }
+        }
+    }
+
     /// Upload-Post API key. Stored property (so views can bind to it) but
     /// mirrored to the Keychain on every change — never written to UserDefaults.
     var apiKey: String {
@@ -37,6 +60,17 @@ final class AppSettings {
         didSet { defaults.set(tiktokAsDraft, forKey: Keys.tiktokDraft) }
     }
 
+    /// The Copywriter model used to caption generated shorts.
+    var copywriterModel: CopywriterModel {
+        didSet { defaults.set(copywriterModel.rawValue, forKey: Keys.copywriter) }
+    }
+
+    /// Default for burning an AI text hook into the top of each generated short.
+    /// Per-clip toggles can override this.
+    var burnHookOverlay: Bool {
+        didSet { defaults.set(burnHookOverlay, forKey: Keys.burnHook) }
+    }
+
     private let defaults: UserDefaults
 
     init(defaults: UserDefaults = .standard) {
@@ -47,6 +81,11 @@ final class AppSettings {
         self.styleExamples = defaults.string(forKey: Keys.style) ?? ""
         // Defaults to true on first launch (no stored value yet).
         self.tiktokAsDraft = defaults.object(forKey: Keys.tiktokDraft) as? Bool ?? true
+        // Default to Gemma: it already ships and uses less memory.
+        self.copywriterModel = defaults.string(forKey: Keys.copywriter)
+            .flatMap(CopywriterModel.init) ?? .gemmaE4B
+        // Default on — the user opted into the hook-overlay feature.
+        self.burnHookOverlay = defaults.object(forKey: Keys.burnHook) as? Bool ?? true
     }
 
     /// True once the app has enough to publish.
@@ -68,6 +107,8 @@ final class AppSettings {
         static let language    = "shortcast.languageOverride"
         static let style       = "shortcast.styleExamples"
         static let tiktokDraft = "shortcast.tiktokAsDraft"
+        static let copywriter  = "shortcast.copywriterModel"
+        static let burnHook    = "shortcast.burnHookOverlay"
         static let apiKey      = "upload-post-api-key"
     }
 }

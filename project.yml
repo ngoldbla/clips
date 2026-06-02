@@ -13,6 +13,26 @@ packages:
   # Pulls in mlx-swift, mlx-swift-lm, swift-transformers transitively.
   Gemma4Swift:
     path: Vendor/gemma-4-swift-mlx
+  # Qwen 3.5 9B (the "Director" that finds viral moments from a transcript).
+  # Same MLX stack Gemma4Swift already resolves — declaring the products here
+  # just makes them linkable from the app target. Do NOT pin mlx-swift directly:
+  # let it stay transitive so it respects Gemma's 0.31.3 floor (single source).
+  mlx-swift-lm:
+    url: https://github.com/ml-explore/mlx-swift-lm
+    branch: main
+  swift-huggingface:
+    url: https://github.com/huggingface/swift-huggingface
+    from: "0.9.0"
+  # WhisperKit caps swift-transformers at <1.2.0; Gemma only needs >=1.1.6, so
+  # 1.1.x satisfies the whole graph. (mlx-swift-lm doesn't depend on it at all.)
+  swift-transformers:
+    url: https://github.com/huggingface/swift-transformers
+    from: "1.1.6"
+  # On-device transcription, used only as a fallback when a long video has no
+  # .srt/.vtt alongside it. Lazy: the Whisper model never downloads otherwise.
+  WhisperKit:
+    url: https://github.com/argmaxinc/WhisperKit
+    from: "0.9.0"
 
 targets:
   Shortcast:
@@ -23,6 +43,18 @@ targets:
     dependencies:
       - package: Gemma4Swift
         product: Gemma4Swift
+      - package: mlx-swift-lm
+        product: MLXVLM         # VLMModelFactory — Qwen 3.5 9B is a VLM package
+      - package: mlx-swift-lm
+        product: MLXLMCommon     # ChatSession, GenerateParameters, ModelContainer
+      - package: mlx-swift-lm
+        product: MLXHuggingFace  # #hubDownloader(), #huggingFaceTokenizerLoader()
+      - package: swift-huggingface
+        product: HuggingFace
+      - package: swift-transformers
+        product: Tokenizers
+      - package: WhisperKit
+        product: WhisperKit
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.shortcast.Shortcast
