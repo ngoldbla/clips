@@ -2,22 +2,23 @@
 
 # Shortcast
 
-**One short video → ready-to-post copy for TikTok, Instagram Reels and YouTube Shorts.**
-**Generated fully on your Mac. Open-source.**
+**Long videos → ready-to-post shorts for TikTok, Instagram Reels and YouTube Shorts.**
+**Found, cut, captioned, reframed and scheduled — fully on your Mac. Open-source.**
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/macOS-15%2B-black?logo=apple)
 ![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-required-1d1d1f)
 ![Swift 6](https://img.shields.io/badge/Swift-6.0-F05138?logo=swift&logoColor=white)
-![Model](https://img.shields.io/badge/Gemma_4_E4B-on--device-4285F4)
+![Model](https://img.shields.io/badge/Gemma_4_12B-on--device-4285F4)
+![Whisper](https://img.shields.io/badge/WhisperKit-large--v3-00B8D9)
 
 <br />
 
-<img src="assets/demo.gif" alt="Shortcast demo — drop a short video, get three editable platform previews" width="720" />
+<img src="assets/demo.gif" alt="Shortcast demo — drop a long video, get cut, captioned, vertical shorts" width="720" />
 
 <br />
 
-<sub>Drop a clip → it watches and listens → three editable phone-style previews → publish to all three at once.</sub>
+<sub>Drop a long video → it transcribes, finds the best moments, cuts them, writes the copy, reframes to vertical → review the grid → publish or schedule the whole week.</sub>
 
 </div>
 
@@ -25,80 +26,104 @@
 
 ## What it does
 
-You drop a short vertical video onto the window. About 30 seconds later, Shortcast gives
-you **three editable post previews** — one for **TikTok**, one for **Instagram Reels**,
-one for **YouTube Shorts** — each rendered as a phone mockup with **your video playing
-behind the real platform UI**. Tap any line of caption to edit it. Hit Publish and the
-same clip goes out to all three networks with the right copy for each.
+Shortcast has two modes:
+
+### 🎬 Make shorts from a long video (the main one)
+
+Drop a podcast, talk, stream or any long recording. Shortcast transcribes it on-device,
+finds the **best 3–6 viral moments**, cuts each one, and writes the **full post copy for
+all three platforms** — all in one pass. Horizontal (16:9) footage is **reframed to
+vertical 9:16**, tracking the speaker's face. You get a grid of finished shorts you can
+play with sound, edit, download, publish, or **schedule one-per-day across the week**.
+
+### ✏️ Caption a short
+
+Already have a short vertical clip? Drop it and Shortcast **watches the frames and hears
+the audio** (Gemma 4 E4B, multimodal) and writes the three platform captions directly,
+rendered as editable phone-style previews.
 
 What's different about Shortcast:
 
 - 🛰️ **Nothing leaves your Mac during processing.** No cloud model, no upload.
   Your video is only sent to a network when you choose to publish it.
-- 🧠 **Real multimodal understanding** — Gemma 4 E4B watches the frames *and* hears
-  the audio. The captions actually reflect what's in the clip.
-- ✏️ **Edit on the preview itself.** No abstract form — you see the post like it'll
-  look on the feed, and type directly on it.
+- 🧠 **One model does the thinking.** A single on-device LLM reads the whole transcript,
+  picks the moments *and* writes every caption in the same pass.
 - 🎯 **Tuned per platform.** TikTok gets punchy. Instagram gets storytelling and 20–30
-  hashtags. YouTube gets short, search-friendly titles. Driven by a bundled writing
-  skill ([`social-content-coach.md`](Shortcast/Resources/social-content-coach.md)).
-- 🪶 **No Python. No Electron. No embedded runtime.** Just Swift, MLX, AVFoundation.
-  The whole app weighs ~50 MB; the model downloads on first launch.
+  hashtags. YouTube gets short, search-friendly titles — in the language spoken in the video.
+- 📐 **Auto vertical reframe.** On-device face tracking (Vision) turns 16:9 into 9:16,
+  panning to keep the speaker centred, with a blurred-background fallback when there's no
+  clear face.
+- 🗓️ **Schedule the week in one click.** Distribute approved shorts one per day, pick the
+  time, and Upload-Post publishes them automatically.
+- 🪶 **No Python. No Electron. No embedded runtime.** Just Swift, MLX, AVFoundation, Vision.
 
-## How the video processing works
+## How a long video becomes shorts
 
 ```
-  ┌──────────────────────────────────────────────────────────────────┐
-  │  YOUR MAC — nothing leaves until you press Publish               │
-  │                                                                  │
-  │   drop ┐                                                         │
-  │        ▼                                                         │
-  │   ┌──────────────┐   frames   ┌─────────────────┐                │
-  │   │ AVFoundation │──────────► │                 │   JSON with    │
-  │   │              │   audio    │ Gemma 4 E4B     │──► 3 variants  │
-  │   │ frame sampler│──────────► │ via MLX (Metal) │                │
-  │   │ + audio mux  │   prompt   │                 │                │
-  │   └──────────────┘─────────►  └─────────────────┘                │
-  │        ▲                                                         │
-  │        │                              │                          │
-  │        │                              ▼                          │
-  │        │                      ┌─────────────────┐                │
-  │        │                      │ 3 phone-style   │  edit in       │
-  │        │                      │ post previews   │  place         │
-  │        └──── original video ──┤ (video + chrome │                │
-  │                               │  + your copy)   │                │
-  │                               └─────────────────┘                │
-  └──────────────────────────────────────────────────────────────────┘
-                                          │  press Publish
-                                          ▼
-                                  ┌─────────────────┐
-                                  │   Upload-Post   │   one HTTP call,
-                                  │       API       │   three networks
-                                  └─────────────────┘
+  ┌──────────────────────────────────────────────────────────────────────┐
+  │  YOUR MAC — nothing leaves until you press Publish                    │
+  │                                                                       │
+  │  drop a long video                                                    │
+  │        │                                                              │
+  │        ▼                                                              │
+  │  ┌──────────────┐   ┌────────────────────┐   ┌───────────────────┐    │
+  │  │ WhisperKit   │──►│  Director LLM       │──►│ AVFoundation      │    │
+  │  │ large-v3     │   │  Gemma 4 12B (MLX)  │   │ cut each clip     │    │
+  │  │ transcribe   │   │  finds moments +    │   │ + reframe 9:16    │    │
+  │  │ (GPU)        │   │  writes 3 captions  │   │  (Vision tracking)│    │
+  │  └──────────────┘   │  in ONE pass        │   │ + hook overlay    │    │
+  │                     └────────────────────┘   └───────────────────┘    │
+  │                                                       │                │
+  │                                                       ▼                │
+  │                                              ┌───────────────────┐     │
+  │                                              │ grid of shorts:   │     │
+  │                                              │ play w/ sound,    │     │
+  │                                              │ edit, download,   │     │
+  │                                              │ approve           │     │
+  │                                              └───────────────────┘     │
+  └──────────────────────────────────────────────────────────────────────┘
+                                  │  Publish now  /  Schedule the week
+                                  ▼
+                          ┌─────────────────┐
+                          │   Upload-Post   │  TikTok · Instagram · YouTube
+                          │       API       │  (now, or scheduled per day)
+                          └─────────────────┘
 ```
 
-Concretely, when you drop a clip:
+Concretely:
 
-1. **AVFoundation** samples ~16 keyframes evenly across the video and exports the audio
-   track to a small temp file. Frame extraction is built into the
-   [vendored Gemma 4 runtime](Vendor/gemma-4-swift-mlx); we only need to peel off the
-   audio.
-2. The frames, audio, and a multi-section prompt — your bundled writing skill, the
-   creator's style examples (optional), a language hint, and a strict JSON schema —
-   are handed to **Gemma 4 E4B**.
-3. **MLX-Swift** runs the model on the Apple Silicon GPU and Neural Engine. The
-   "audio tower" hears up to 30 seconds; the vision encoder processes frames at
-   ~1 fps with timestamps.
-4. The model returns a single JSON object with three platform variants. A
-   tolerant parser strips any code fences or thinking tokens and builds the
-   structured result.
-5. SwiftUI renders the **three phone mockups** — your video looping behind the real
-   platform chrome (action rail, follow/subscribe button, music disc, dynamic island),
-   with the hook/caption/hashtags as editable text overlays.
-6. On **Publish**, the original video and your per-platform copy are sent in a single
-   multipart `POST` to [Upload-Post](https://upload-post.com), which fans it out to
-   TikTok, Instagram and YouTube. TikTok lands as a draft by default so you can finish
-   in-app.
+1. **Transcribe.** If the video has a `.srt`/`.vtt` sidecar, it's used instantly.
+   Otherwise **WhisperKit** (`large-v3`) transcribes on the GPU. The transcript's
+   language is detected from the *text* (NaturalLanguage), so captions stay in the
+   spoken language.
+2. **Find the moments + write the copy.** The **Director** — an on-device LLM — reads the
+   whole transcript and returns a single JSON: the best clips (start/end, why, hook, a
+   short on-screen overlay) **and** the full TikTok / Instagram / YouTube caption package
+   for each, in one pass. A tolerant parser strips fences/thinking and validates clip
+   durations.
+3. **Cut.** AVFoundation cuts each moment to its own file.
+4. **Reframe (optional, automatic for horizontal clips).** Vision samples faces across
+   the clip; if the speaker is found, an `AVMutableVideoComposition` pans a 9:16 crop to
+   follow them (GPU-interpolated transform ramps). No clear face → a blurred-background
+   letterbox. A short text **hook** can be burned over the top.
+5. **Review.** A grid of phone-style tiles — loop each short, play it with sound, edit the
+   captions, download the rendered `.mp4`, or approve it.
+6. **Publish or schedule.** Publish now, or **schedule the week**: approved shorts go out
+   one per day at a time you choose, via Upload-Post's `scheduled_date`. TikTok lands as a
+   draft by default so you can finish in-app.
+
+### Choosing the model
+
+Settings → *Caption writer* picks the on-device model that finds the moments and writes
+the captions:
+
+| Model | Role | Notes |
+|-------|------|-------|
+| **Gemma 4 12B** (default) | Director + inline captions | Strongest writing, one model, one pass. Loaded via MLX. |
+| **Qwen 3.5 9B** | Director + inline captions | Lighter and a bit faster, one pass. Huge context window. |
+| **Gemma 4 E4B** | Clip-watching copywriter | Multimodal — *watches* each clip (frames + audio) and captions it in a separate pass. Also the model used by *Caption a short*. |
+
+The model downloads once on first use. Everything runs offline afterwards.
 
 ## Install
 
@@ -121,14 +146,15 @@ xattr -dr com.apple.quarantine /Applications/Shortcast.app
 
 ### First run
 
-- Shortcast downloads **Gemma 4 E4B** (~5 GB) with a visible progress bar. Happens once,
-  then it works offline for analysis.
+- Shortcast downloads the models it needs on first use, with a visible progress bar:
+  the **Director** (Gemma 4 12B ≈ 7 GB, or Qwen 3.5 9B ≈ 5 GB) and **WhisperKit
+  large-v3** for transcription. Happens once, then it works offline.
 - Open **Settings** (⌘,) and add your [Upload-Post](https://upload-post.com) **API key**
   and **profile name** (the one from *Manage Users*, not your social handle).
 - Optionally set a caption language and paste a few of your own captions as style
   examples — the model will match your voice.
 
-You can generate posts without Upload-Post; only publishing needs it.
+You can generate shorts without Upload-Post; only publishing/scheduling needs it.
 
 ## Build from source
 
@@ -146,13 +172,11 @@ open Shortcast.xcodeproj
 Build and run the **Shortcast** scheme. The `.xcodeproj` is generated from
 `project.yml` and intentionally not committed — `xcodegen` regenerates it.
 
-There's also a headless dev tool, `shortcast-probe`, that exercises the real
-generation path on a chosen video:
-
-```bash
-xcodebuild -scheme shortcast-probe -configuration Debug build -derivedDataPath build
-./build/Build/Products/Debug/shortcast-probe path/to/clip.mp4
-```
+> CLI builds need `-skipMacroValidation`:
+> ```bash
+> xcodebuild -project Shortcast.xcodeproj -scheme Shortcast \
+>   -configuration Debug -skipMacroValidation -destination 'platform=macOS' build
+> ```
 
 ### Release DMG
 
@@ -169,45 +193,48 @@ git push origin v0.1.0
 | Layer            | Used                                                                  |
 |------------------|-----------------------------------------------------------------------|
 | UI               | SwiftUI · AVKit                                                       |
-| On-device model  | Gemma 4 E4B (4-bit), text + vision + audio + video                    |
+| Transcription    | [WhisperKit](https://github.com/argmaxinc/WhisperKit) `large-v3` (Metal/GPU) |
+| Director model   | Gemma 4 12B or Qwen 3.5 9B (4-bit), runs as a text LLM via MLX        |
+| Clip-watcher     | Gemma 4 E4B (4-bit), text + vision + audio                           |
 | Inference        | [MLX](https://github.com/ml-explore/mlx-swift) (Metal, Neural Engine) |
 | Gemma 4 runtime  | [gemma-4-swift-mlx](https://github.com/VincentGourbin/gemma-4-swift-mlx), vendored in `Vendor/` |
-| Media extraction | AVFoundation (frame sampling + audio export)                          |
-| Publishing       | [Upload-Post](https://upload-post.com) API                            |
-| Secrets          | macOS Keychain                                                        |
-| Build            | XcodeGen · GitHub Actions                                             |
+| Vertical reframe | Vision (face detection) + AVFoundation (transform ramps / Core Image)|
+| Media            | AVFoundation (cut, sample, export) · AVKit playback                  |
+| Publishing       | [Upload-Post](https://upload-post.com) API (publish + schedule)      |
+| Build            | XcodeGen · GitHub Actions                                            |
 
 ## Privacy
 
-The video itself is **not** uploaded during analysis. Everything — frame sampling,
-audio mel-spectrogram, model inference, JSON parsing — runs inside the app, on your
-Mac. The only outbound traffic before you publish is:
+Transcription, moment-finding, captioning, cutting and reframing all run inside the app,
+on your Mac. The only outbound traffic before you publish is:
 
-- **First run only**: a one-time download of the Gemma 4 weights from Hugging Face.
-- **On Publish**: a single multipart upload to Upload-Post, with your video and the
-  copy you approved.
+- **First use only**: one-time downloads of the model weights from Hugging Face.
+- **On Publish / Schedule**: an upload to Upload-Post with the rendered short and the copy
+  you approved (immediately, or at the scheduled time).
 
-Your API key lives in the macOS Keychain, never in plist or settings files.
+Your Upload-Post API key is stored locally on your Mac (app preferences) and is only ever
+sent to Upload-Post over HTTPS when you publish. It is never written into the repository.
 
 ## Known limitations
 
-- Gemma 4's audio encoder hears the **first 30 seconds**. Frames cover the whole clip,
-  but if the punchline is at second 50 in audio, the model won't hear it.
-- The app is **unsigned** (see *Install*). Code signing + notarization will come once
-  the project stabilises.
-- One video at a time — no history, no batch processing, no in-app account linking.
-  By design, for now.
-- Upload-Post free tier limits monthly uploads. One publish to three networks counts
-  as three.
+- The **Director** runs a large model on-device. On an M1 Pro, a ~2-minute video takes a
+  few minutes end-to-end (transcription + generation). Faster Macs (M3/M4) are quicker.
+- *Caption a short* uses Gemma 4 E4B, whose audio encoder hears the **first 30 seconds**.
+- The app is **unsigned** (see *Install*). Code signing + notarization will come once the
+  project stabilises.
+- One video at a time — no history, no batch processing. By design, for now.
+- Upload-Post free tier limits monthly uploads. One publish to three networks counts as
+  three.
 
 ## Acknowledgements
 
-- **Google** for the Gemma 4 family — open weights with full multimodal capability are
-  what makes this app possible.
+- **Google** for the Gemma 4 family — open weights with full multimodal capability.
 - **Apple's MLX team** for [MLX](https://github.com/ml-explore/mlx-swift) and
   [mlx-swift-lm](https://github.com/ml-explore/mlx-swift-lm).
 - **Vincent Gourbin** for [gemma-4-swift-mlx](https://github.com/VincentGourbin/gemma-4-swift-mlx),
   the native Gemma 4 runtime we vendor.
+- **Argmax** for [WhisperKit](https://github.com/argmaxinc/WhisperKit).
+- **Alibaba** for the Qwen 3.5 open weights.
 - **Upload-Post** for the cross-platform publishing API.
 
 ## License

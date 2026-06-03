@@ -83,7 +83,15 @@ final class ModelManager {
 
     // MARK: - Director (moment finder)
 
-    /// Loads Qwen 3.5 9B if needed. Called from the shorts pipeline, not launch.
+    /// Loads the Director (the user's chosen text model — Gemma 4 12B by default,
+    /// or Qwen 3.5 9B) if needed. Switches model first when the pick changed.
+    /// Called from the shorts pipeline, not launch.
+    func prepareDirector(profile: ChatModelProfile) async {
+        momentFinder.setProfile(profile)
+        await momentFinder.prepareIfNeeded()
+    }
+
+    /// Loads whichever Director model is currently selected.
     func prepareDirectorIfNeeded() async {
         await momentFinder.prepareIfNeeded()
     }

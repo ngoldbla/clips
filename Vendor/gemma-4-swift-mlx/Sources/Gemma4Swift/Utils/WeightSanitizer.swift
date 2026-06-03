@@ -39,11 +39,15 @@ public enum WeightSanitizer {
             if key.contains("rotary_emb") { continue }
             if key.contains(".rope.") && key.hasSuffix(".freqs") { continue }
 
-            // Skip audio si pas d'audio tower
-            if !hasAudio && (key.contains("audio_tower") || key.contains("embed_audio")) { continue }
+            // Skip audio si pas d'audio tower. "gemma4_unified" nomme ces poids
+            // embed_audio / audio_embedder au lieu de audio_tower.
+            if !hasAudio && (key.contains("audio_tower") || key.contains("embed_audio")
+                || key.contains("audio_embedder")) { continue }
 
-            // Skip vision si pas de vision tower
-            if !hasVision && (key.contains("vision_tower") || key.contains("embed_vision")) { continue }
+            // Skip vision si pas de vision tower. "gemma4_unified" utilise
+            // vision_embedder / embed_vision au lieu de vision_tower.
+            if !hasVision && (key.contains("vision_tower") || key.contains("embed_vision")
+                || key.contains("vision_embedder")) { continue }
 
             var newKey = key
             var newValue = value

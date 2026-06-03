@@ -15,6 +15,11 @@ struct ClipCandidate: Sendable, Identifiable, Equatable {
     /// Short on-screen text hook (a few words) for the burned-in overlay.
     var overlay: String = ""
 
+    /// The 3-platform caption package, when the Director writes it inline in the
+    /// same pass (Qwen copywriter). Empty when captions are produced separately
+    /// (Gemma copywriter, which watches each cut clip).
+    var variants: [PostVariant] = []
+
     var duration: Double { end - start }
 
     /// `m:ss–m:ss`, e.g. `0:51–1:09`.

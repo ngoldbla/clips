@@ -222,19 +222,98 @@ public class Gemma4Attention: Module {
             return (oProj(output), (keys, values), effectiveOffset)
         }
 
-        // Standard path: attentionWithCacheUpdate() gere l'update du cache
-        let output = attentionWithCacheUpdate(
+        // Standard path: sdpaWithCacheUpdate() gere l'update du cache. Pour les
+        // grands head dims (couches full-attention du 12B, headDim=512) il evite
+        // le kernel Metal fuse qui plante sur certains GPU.
+        let output = sdpaWithCacheUpdate(
             queries: queries,
             keys: keys,
             values: values,
             cache: cache,
-            scale: scale,
             mask: mask
         )
         .transposed(0, 2, 1, 3)
         .reshaped(B, L, -1)
 
         return (oProj(output), (keys, values), effectiveOffset)
+    }
+
+    // MARK: - Attention sans kernel Metal fuse (grands head dims)
+
+    /// Equivalent de `MLXLMCommon.attentionWithCacheUpdate`, mais quand le head
+    /// dim est trop grand pour le kernel SDPA fuse (ex. 512 sur les couches
+    /// full-attention du 12B : il demande un threadgroup de 1024, au-dela du max
+    /// par-pipeline de certains GPU — 768 sur M1 Pro — et avorte), il calcule
+    /// l'attention avec un simple matmul + softmax. Les petits head dims gardent
+    /// le chemin rapide fuse.
+    private func sdpaWithCacheUpdate(
+        queries: MLXArray, keys: MLXArray, values: MLXArray,
+        cache: KVCache?, mask: MLXFast.ScaledDotProductAttentionMaskMode
+    ) -> MLXArray {
+        guard headDim > 256 else {
+            return attentionWithCacheUpdate(
+                queries: queries, keys: keys, values: values,
+                cache: cache, scale: scale, mask: mask)
+        }
+        let k: MLXArray, v: MLXArray
+        if let cache {
+            (k, v) = cache.update(keys: keys, values: values)
+        } else {
+            (k, v) = (keys, values)
+        }
+        return manualAttention(queries: queries, keys: k, values: v, mask: mask)
+    }
+
+    /// Attention classique : softmax(QKᵀ·scale + masque)·V. Groupe les queries
+    /// par tete K/V et laisse le matmul diffuser les têtes K/V sur la dimension de
+    /// repeat — evite de materialiser des K/V repetes (memoire). Utilise des
+    /// kernels generiques (matmul/softmax) qui respectent la limite de threads.
+    private func manualAttention(
+        queries: MLXArray, keys: MLXArray, values: MLXArray,
+        mask: MLXFast.ScaledDotProductAttentionMaskMode
+    ) -> MLXArray {
+        // queries [B, H, L, D] ; keys/values [B, Hkv, S, D]
+        let b = queries.dim(0)
+        let lq = queries.dim(2)
+        let d = queries.dim(3)
+        let hkv = keys.dim(1)
+        let s = keys.dim(2)
+        let nRep = numHeads / hkv
+
+        // Compute in fp32: the 512-dim QKᵀ accumulates too much fp16 error
+        // otherwise, perturbing the logits enough to mis-sample tokens (corrupted
+        // JSON). The fused kernel accumulates in higher precision internally.
+        let q = (nRep > 1 ? queries.reshaped(b, hkv, nRep, lq, d) : queries).asType(.float32)
+        let k = (nRep > 1 ? keys.reshaped(b, hkv, 1, s, d) : keys).asType(.float32)
+        let v = (nRep > 1 ? values.reshaped(b, hkv, 1, s, d) : values).asType(.float32)
+
+        var scores = matmul(q * scale, k.swappedAxes(-1, -2))
+        switch mask {
+        case .array(let m):
+            scores = scores + Self.broadcastMask(m.asType(.float32), rank: scores.ndim)
+        case .causal:
+            // Masque causal additif, avec decalage si un prefixe est deja en cache.
+            let rows = MLXArray(0 ..< lq).reshaped(lq, 1)
+            let cols = MLXArray(0 ..< s).reshaped(1, s)
+            let keep = cols .<= (rows + (s - lq))
+            let additive = (1 - keep.asType(.float32)) * Float(-1e9)
+            scores = scores + additive
+        default:
+            break
+        }
+        let weights = softmax(scores, axis: -1, precise: true)
+        var out = matmul(weights, v)
+        if nRep > 1 { out = out.reshaped(b, numHeads, lq, d) }
+        return out.asType(queries.dtype)
+    }
+
+    /// Prepend des axes unitaires a un masque additif pour qu'il diffuse contre
+    /// un tenseur de scores de rang `rank` (ses dims [.., L, S] restent alignees).
+    private static func broadcastMask(_ m: MLXArray, rank: Int) -> MLXArray {
+        guard m.ndim < rank else { return m }
+        var shape = Array(repeating: 1, count: rank - m.ndim)
+        shape.append(contentsOf: m.shape)
+        return m.reshaped(shape)
     }
 
     private func computeKV(

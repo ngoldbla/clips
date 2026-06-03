@@ -18,6 +18,9 @@ Package.resolved
 Vendor/gemma-4-swift-mlx/.git/
 Vendor/gemma-4-swift-mlx/.build/
 
+# Claude Code local config / scratch
+.claude/
+
 # macOS
 .DS_Store
 

@@ -84,7 +84,9 @@ enum VideoOverlayRenderer {
     /// A rounded pill near the top holding the wrapped, centered hook text.
     /// (Core Animation's video coordinate space has its origin at the bottom-left,
     /// so "top" is a high y.)
-    private static func makeHookBand(text: String, renderSize: CGSize) -> CALayer {
+    /// Internal (not private) so `VerticalReframer` can reuse it when it burns the
+    /// hook into the same export pass as the reframe.
+    static func makeHookBand(text: String, renderSize: CGSize) -> CALayer {
         let w = renderSize.width
         let fontSize = max(24, w * 0.058)
         let font = NSFont.systemFont(ofSize: fontSize, weight: .heavy)
@@ -123,7 +125,7 @@ enum VideoOverlayRenderer {
     }
 
     /// Visible from 0→hold, fades over 0.5s, then stays hidden.
-    private static func addOpacityAnimation(to layer: CALayer, total: Double, hold: Double) {
+    static func addOpacityAnimation(to layer: CALayer, total: Double, hold: Double) {
         let fade = 0.5
         let clampedHold = min(hold, max(0, total - fade))
         let anim = CAKeyframeAnimation(keyPath: "opacity")

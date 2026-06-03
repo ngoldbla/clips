@@ -17,6 +17,7 @@ struct ShortClipCard: View {
             case .failed(let message):
                 failed(message)
             case .ready:
+                if clip.isLandscape { reframeEditor }
                 overlayEditor
                 previews
                 footer
@@ -76,6 +77,24 @@ struct ShortClipCard: View {
             .foregroundStyle(.orange)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.vertical, 12)
+    }
+
+    private var reframeEditor: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle(isOn: $clip.reframeEnabled) {
+                Label("Convert to vertical (9:16)", systemImage: "aspectratio")
+                    .font(.callout)
+            }
+            .toggleStyle(.switch)
+
+            if clip.reframeEnabled {
+                Text("Tracks the speaker and reframes this horizontal clip for TikTok/Reels/Shorts when you publish.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .padding(10)
+        .background(.quinary, in: RoundedRectangle(cornerRadius: 10))
     }
 
     private var overlayEditor: some View {

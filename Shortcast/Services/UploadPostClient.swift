@@ -61,7 +61,8 @@ struct UploadPostClient: Sendable {
     func publish(
         videoURL: URL,
         variants: [PostVariant],
-        tiktokAsDraft: Bool
+        tiktokAsDraft: Bool,
+        scheduledDate: Date? = nil
     ) async throws -> PublishReport {
 
         guard !apiKey.trimmed.isEmpty, !profileName.trimmed.isEmpty else {
@@ -83,6 +84,14 @@ struct UploadPostClient: Sendable {
         body.addField("async_upload", "false")
         for platform in SocialPlatform.allCases where byPlatform[platform] != nil {
             body.addField("platform[]", platform.uploadPostID)
+        }
+
+        // Scheduled publishing: the server queues the post for this instant.
+        if let scheduledDate {
+            let iso = ISO8601DateFormatter()
+            iso.formatOptions = [.withInternetDateTime]  // UTC, e.g. 2026-12-25T10:00:00Z
+            body.addField("scheduled_date", iso.string(from: scheduledDate))
+            body.addField("timezone", TimeZone.current.identifier)
         }
 
         // General fallbacks (also satisfies YouTube's required `title`).

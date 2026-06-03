@@ -34,6 +34,18 @@ struct ChatModelProfile: Sendable {
     /// exists in vision-language form on HF, so it loads via VLMModelFactory).
     let factoryKind: FactoryKind
 
+    /// How the weights get turned into a `ModelContainer`. Both paths produce a
+    /// container that drives the same `ChatSession` text generation — they only
+    /// differ in how the architecture is registered/loaded.
+    enum Loader {
+        /// Standard mlx-swift-lm factory (Qwen 3.5 ships as a VLM package).
+        case vlm
+        /// Gemma 4 — register the custom "gemma4" type (text-only) via the
+        /// vendored Gemma4Swift package, then load with its tokenizer loader.
+        case gemma4Text
+    }
+    let loader: Loader
+
     /// Vendor-recommended decoding parameters.
     let sampling: SamplingConfig
 
@@ -43,6 +55,7 @@ struct ChatModelProfile: Sendable {
         modelID: "mlx-community/Qwen3.5-9B-MLX-4bit",
         displayName: "Qwen 3.5 9B",
         factoryKind: .vlm,
+        loader: .vlm,
         // Qwen3 non-thinking recommended sampling (temp 0.7 / topP 0.8 / topK 20).
         // Thinking is forced OFF via additionalContext, so these are correct.
         // maxTokens bumped from Hermes' 1536 → 4096: the clips JSON for a long
@@ -52,4 +65,24 @@ struct ChatModelProfile: Sendable {
             temperature: 0.7, topP: 0.8, topK: 20, minP: 0,
             repetitionPenalty: nil, maxTokens: 4096,
             maxKVSize: 40960, kvBits: 8))
+
+    /// Gemma 4 12B — Google's new dense 12B (text+vision). We feed it the
+    /// transcript text only, so it runs as a text LLM through the same
+    /// `ChatSession` path as Qwen, via the vendored Gemma4Swift registration.
+    /// The default Director: stronger writing than Qwen at a similar footprint.
+    static let gemma12B = ChatModelProfile(
+        modelID: "mlx-community/gemma-4-12B-it-4bit",
+        displayName: "Gemma 4 12B",
+        factoryKind: .llm,
+        loader: .gemma4Text,
+        // Lower temperature than Gemma's chat default (1.0): we need strict JSON,
+        // and high temp makes the model drift mid-structure (corrupted keys, bad
+        // commas) so the clips JSON won't parse. KV cache is left unquantized
+        // (kvBits nil): the 12B's full-attention layers use a 512 head dim that
+        // overflows the fused/quantized SDPA Metal kernel, so we fall back to a
+        // manual matmul+softmax attention that needs a plain cache.
+        sampling: SamplingConfig(
+            temperature: 0.6, topP: 0.9, topK: 40, minP: 0,
+            repetitionPenalty: nil, maxTokens: 4096,
+            maxKVSize: nil, kvBits: nil))
 }

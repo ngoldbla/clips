@@ -1,4 +1,5 @@
 import Foundation
+import Gemma4Swift
 import HuggingFace
 import MLX
 import MLXLMCommon
@@ -29,7 +30,9 @@ final class MomentFinderService {
     private(set) var phase: Phase = .idle
     private var container: ModelContainer?
 
-    private let profile = ChatModelProfile.qwen35_9b
+    /// Which model plays the Director. Defaults to Gemma 4 12B; switched to match
+    /// the user's pick via `setProfile(_:)` before the model loads.
+    private(set) var profile = ChatModelProfile.gemma12B
 
     var isReady: Bool { container != nil }
     var isBusy: Bool {
@@ -48,15 +51,22 @@ final class MomentFinderService {
 
     // MARK: - Lifecycle
 
-    /// Downloads (if needed) and loads Qwen 3.5 9B. Safe to call repeatedly.
-    /// Loaded lazily on the first long-video drop — not at app launch.
+    /// Switches the Director model. If a different model is already loaded, it's
+    /// unloaded so the next `prepareIfNeeded()` brings up the new one.
+    func setProfile(_ newProfile: ChatModelProfile) {
+        guard newProfile.modelID != profile.modelID else { return }
+        if container != nil { unload() }
+        profile = newProfile
+    }
+
+    /// Downloads (if needed) and loads the selected Director model. Safe to call
+    /// repeatedly. Loaded lazily on the first long-video drop — not at app launch.
     func prepareIfNeeded() async {
         guard container == nil, !isBusy else { return }
         phase = .downloading(fraction: 0)
 
         do {
             let downloader = #hubDownloader()
-            let tokenizerLoader = #huggingFaceTokenizerLoader()
             let localDir = try await downloader.download(
                 id: profile.modelID,
                 revision: nil,
@@ -71,13 +81,26 @@ final class MomentFinderService {
                 })
 
             phase = .loading
-            // Qwen 3.5 9B ships only as a VLM package on HF → VLMModelFactory.
-            // We feed it text only; no chat-template patch is needed because we
-            // do plain text generation (the patch only matters for tool calls).
-            container = try await VLMModelFactory.shared.loadContainer(
-                from: localDir, using: tokenizerLoader)
+            // Both models feed plain text and generate via ChatSession; they only
+            // differ in how the container is built.
+            switch profile.loader {
+            case .vlm:
+                // Qwen 3.5 9B ships only as a VLM package on HF → VLMModelFactory.
+                // No chat-template patch is needed for plain text generation.
+                container = try await VLMModelFactory.shared.loadContainer(
+                    from: localDir, using: #huggingFaceTokenizerLoader())
+            case .gemma4Text:
+                // Gemma 4 isn't in mlx-swift-lm's registry — register the custom
+                // "gemma4" type (text-only: we never pass it media) and load with
+                // the package's tokenizer loader.
+                await Gemma4Registration.register(multimodal: false)
+                container = try await loadModelContainer(
+                    from: localDir, using: Gemma4TokenizerLoader())
+            }
             phase = .ready
+            Self.log("director loaded: \(profile.displayName) (\(profile.modelID))")
         } catch {
+            Self.log("director load FAILED for \(profile.modelID): \(error)")
             phase = .failed(error.localizedDescription)
         }
     }
@@ -98,12 +121,23 @@ final class MomentFinderService {
 
     /// Runs one pass over the full transcript and returns ranked clip candidates.
     /// Builds a fresh session per call so one video's KV never leaks into the next.
-    func findMoments(transcript: String) async throws -> [ClipCandidate] {
+    ///
+    /// When `includeCaptions` is true, the same pass also writes each clip's
+    /// 3-platform caption package — so no separate captioning step is needed.
+    func findMoments(
+        transcript: String,
+        includeCaptions: Bool = false,
+        language: String? = nil,
+        styleExamples: String = ""
+    ) async throws -> [ClipCandidate] {
         guard let container else { throw MomentFinderError.notReady }
 
         let s = profile.sampling
         var params = GenerateParameters(
-            maxTokens: s.maxTokens,
+            // Captions per clip need more room than bare moments, but cap it: a
+            // runaway (incoherent) generation otherwise fills the KV cache and
+            // can OOM with a big model. 4096 fits several clips' caption JSON.
+            maxTokens: includeCaptions ? 4096 : s.maxTokens,
             temperature: s.temperature,
             topP: s.topP,
             topK: s.topK,
@@ -112,15 +146,18 @@ final class MomentFinderService {
         params.maxKVSize = s.maxKVSize
         params.kvBits = s.kvBits
 
+        let instructions = includeCaptions
+            ? Self.captioningPrompt(language: language, styleExamples: styleExamples)
+            : Self.systemPrompt
         let session = ChatSession(
             container,
-            instructions: Self.systemPrompt,
+            instructions: instructions,
             generateParameters: params,
             additionalContext: ["enable_thinking": false])
 
         let userPrompt = "Transcripción del vídeo (con timestamps):\n\n\(transcript)\n\nDevuelve el JSON de clips."
 
-        Self.log("findMoments: transcript \(transcript.count) chars")
+        Self.log("findMoments: transcript \(transcript.count) chars, captions=\(includeCaptions)")
         var raw = ""
         for try await chunk in session.streamResponse(to: userPrompt) {
             raw += chunk
@@ -192,6 +229,51 @@ final class MomentFinderService {
     - "overlay" es un gancho cortísimo y con punch, en el idioma del vídeo, pensado para verse grande encima del vídeo los primeros segundos.
     - Entre 3 y 6 clips, ordenados de mejor a peor.
     """
+
+    /// Combined prompt: find the moments AND write each clip's 3-platform caption
+    /// package in the same pass (no separate captioning step). Used for the Qwen
+    /// copywriter path.
+    static func captioningPrompt(language: String?, styleExamples: String) -> String {
+        let lang = (language ?? "").trimmed
+        let languageRule = lang.isEmpty
+            ? "Escribe TODOS los textos (why, hook, overlay y captions) en el mismo idioma que se habla en el vídeo. No traduzcas al inglés."
+            : "Escribe TODOS los textos (why, hook, overlay y captions) en este idioma: \(lang). Úsalo aunque el vídeo esté en otro idioma."
+
+        let style = styleExamples.trimmed
+        let styleRule = style.isEmpty ? "" : """
+
+        Voz del creador — imita este estilo (tono, ritmo, emojis, formato):
+        \(style)
+        """
+
+        return """
+        Eres un editor experto en contenido short-form viral (TikTok, Reels, \
+        YouTube Shorts). Te doy la transcripción de un vídeo largo, con timestamps. \
+        Tu trabajo: encontrar los MEJORES momentos para cortar en clips verticales \
+        que enganchen en los 2 primeros segundos, Y para cada clip escribir el \
+        paquete de publicación de las 3 redes.
+
+        Reglas:
+        - Cada clip dura entre 15 y 50 segundos. Una idea completa, nada cortado a medias.
+        - Entre 3 y 6 clips, ordenados de mejor a peor.
+        - \(languageRule)
+        - Los hashtags van como palabras sueltas, SIN '#', y cada uno único (no repitas).
+        - Devuelve SOLO un JSON válido, sin texto alrededor, con esta forma EXACTA:
+        {"clips":[{
+          "start":"MM:SS",
+          "end":"MM:SS",
+          "why":"por qué es viral",
+          "hook":"primera frase del clip que para el scroll",
+          "overlay":"texto MUY corto (3-6 palabras) para sobreimprimir en pantalla",
+          "captions":{
+            "tiktok":{"hook":"primera línea que para el scroll, máx 90 caracteres","description":"caption corta y con punch","hashtags":["tag","tag","tag"]},
+            "instagram":{"hook":"primera línea fuerte","description":"2-4 párrafos cortos, storytelling, acaba con llamada a la acción","hashtags":["...20-30 tags mezclando alcance grande y nicho..."]},
+            "youtube":{"hook":"título conciso y buscable, 40-60 caracteres","description":"descripción rica en keywords para búsqueda","hashtags":["...3-5 tags..."]}
+          }
+        }]}
+        - No inventes nada que no esté en la transcripción.\(styleRule)
+        """
+    }
 }
 
 enum MomentFinderError: LocalizedError {
@@ -240,6 +322,13 @@ enum MomentJSONParser {
                 why: string(entry, "why", "reason", "rationale"),
                 hook: string(entry, "hook", "title", "headline"),
                 overlay: string(entry, "overlay", "onscreen", "caption"))
+
+            // Inline 3-platform caption package (Qwen one-pass mode). The captions
+            // object is keyed by platform, which JSONVariantParser already handles.
+            if let captions = entry["captions"] ?? entry["posts"],
+               let result = try? JSONVariantParser.parse(object: captions) {
+                clip.variants = result.variants
+            }
 
             // Validate duration: clamp if too long, drop if too short.
             if clip.duration > maxDuration {

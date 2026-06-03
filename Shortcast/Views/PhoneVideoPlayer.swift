@@ -6,11 +6,15 @@ import SwiftUI
 struct PhoneVideoPlayer: NSViewRepresentable {
 
     let url: URL
+    /// How the video fills its frame. Previews crop-fill (`.resizeAspectFill`);
+    /// the progress screen letterboxes (`.resizeAspect`) so horizontal source
+    /// video isn't weirdly cropped.
+    var gravity: AVLayerVideoGravity = .resizeAspectFill
 
     func makeNSView(context: Context) -> AVPlayerView {
         let view = AVPlayerView()
         view.controlsStyle = .none
-        view.videoGravity = .resizeAspectFill
+        view.videoGravity = gravity
 
         let queue = AVQueuePlayer()
         queue.isMuted = true

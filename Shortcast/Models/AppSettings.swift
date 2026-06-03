@@ -3,37 +3,66 @@ import Observation
 
 /// User configuration: Upload-Post credentials and content-style preferences.
 ///
-/// The API key is persisted in the macOS Keychain; everything else lives in
-/// `UserDefaults`. Held as an `@Observable` so SwiftUI views update on change.
+/// Everything (including the API key) lives in `UserDefaults`. The key used to
+/// sit in the Keychain, but every dev rebuild changes the app's code signature,
+/// so macOS re-prompted on each launch — for a 100% local/offline tool the
+/// plist is a fine home. Held as an `@Observable` so views update on change.
 @MainActor
 @Observable
 final class AppSettings {
 
-    /// Which model writes each clip's captions (the "Copywriter"). The Director
-    /// that finds moments is always Qwen 3.5 9B and is not selectable.
+    /// Which model finds the moments and writes each clip's captions. Two of the
+    /// options (Gemma 4 12B, Qwen 3.5 9B) are text models that double as the
+    /// "Director" and write captions inline in the same pass; the third (Gemma 4
+    /// E4B) is a multimodal copywriter that watches each clip separately.
     enum CopywriterModel: String, CaseIterable, Identifiable, Sendable {
-        case gemmaE4B = "gemma"
+        case gemma12B = "gemma12b"
         case qwen35_9b = "qwen"
+        case gemmaE4B = "gemma"
 
         var id: String { rawValue }
 
         var displayName: String {
             switch self {
-            case .gemmaE4B:  "Gemma 4 E4B · 4-bit"
+            case .gemma12B:  "Gemma 4 12B"
             case .qwen35_9b: "Qwen 3.5 9B"
+            case .gemmaE4B:  "Gemma 4 E4B · 4-bit"
             }
         }
 
         var tagline: String {
             switch self {
-            case .gemmaE4B:  "Watches each clip (frames + audio). Lighter on memory."
-            case .qwen35_9b: "Writes from the clip's transcript. Reuses the Director — one model for everything."
+            case .gemma12B:  "Finds the moments AND writes all three captions in one pass — strongest writing, one model, keeps the spoken language."
+            case .qwen35_9b: "Finds the moments AND writes all three captions in one pass — lighter, one model, keeps the spoken language."
+            case .gemmaE4B:  "Watches each clip (frames + audio) and captions it in a separate pass per clip."
             }
         }
+
+        /// The text model that finds the moments. The two inline options are
+        /// their own Director; the clip-watching option still needs a Director,
+        /// for which we use the default (Gemma 4 12B).
+        var directorProfile: ChatModelProfile {
+            switch self {
+            case .qwen35_9b:           .qwen35_9b
+            case .gemma12B, .gemmaE4B: .gemma12B
+            }
+        }
+
+        /// True when the Director writes the captions in the same pass (so no
+        /// separate per-clip captioning step runs).
+        var usesInlineCaptions: Bool {
+            switch self {
+            case .gemma12B, .qwen35_9b: true
+            case .gemmaE4B:             false
+            }
+        }
+
+        /// True for the multimodal Gemma E4B path that watches each clip — the
+        /// only option that loads a second model alongside the Director.
+        var watchesClips: Bool { self == .gemmaE4B }
     }
 
-    /// Upload-Post API key. Stored property (so views can bind to it) but
-    /// mirrored to the Keychain on every change — never written to UserDefaults.
+    /// Upload-Post API key. Mirrored to `UserDefaults` on every change.
     var apiKey: String {
         didSet { persistAPIKey() }
     }
@@ -71,21 +100,42 @@ final class AppSettings {
         didSet { defaults.set(burnHookOverlay, forKey: Keys.burnHook) }
     }
 
+    /// Default for reframing a horizontal (16:9) clip to vertical 9:16, tracking
+    /// the speaker with Vision. Only applies to clips that are actually
+    /// landscape; per-clip toggles can override this.
+    var reframeToVertical: Bool {
+        didSet { defaults.set(reframeToVertical, forKey: Keys.reframe) }
+    }
+
     private let defaults: UserDefaults
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        self.apiKey = KeychainStore.read(account: Keys.apiKey) ?? ""
+        // API key now lives in UserDefaults. If a value is still in the Keychain
+        // from an older build, migrate it once and clear it from the Keychain.
+        if let stored = defaults.string(forKey: Keys.apiKey), !stored.isEmpty {
+            self.apiKey = stored
+        } else if let legacy = KeychainStore.read(account: Keys.legacyApiKey),
+                  !legacy.isEmpty {
+            self.apiKey = legacy
+            defaults.set(legacy, forKey: Keys.apiKey)
+            KeychainStore.delete(account: Keys.legacyApiKey)
+        } else {
+            self.apiKey = ""
+        }
         self.profileName = defaults.string(forKey: Keys.profile) ?? ""
         self.languageOverride = defaults.string(forKey: Keys.language) ?? ""
         self.styleExamples = defaults.string(forKey: Keys.style) ?? ""
         // Defaults to true on first launch (no stored value yet).
         self.tiktokAsDraft = defaults.object(forKey: Keys.tiktokDraft) as? Bool ?? true
-        // Default to Gemma: it already ships and uses less memory.
+        // Default to Gemma 4 12B: one text model finds the moments and writes
+        // the captions in the same pass, keeping the spoken language.
         self.copywriterModel = defaults.string(forKey: Keys.copywriter)
-            .flatMap(CopywriterModel.init) ?? .gemmaE4B
+            .flatMap(CopywriterModel.init) ?? .gemma12B
         // Default on — the user opted into the hook-overlay feature.
         self.burnHookOverlay = defaults.object(forKey: Keys.burnHook) as? Bool ?? true
+        // Default on — horizontal clips should become vertical shorts.
+        self.reframeToVertical = defaults.object(forKey: Keys.reframe) as? Bool ?? true
     }
 
     /// True once the app has enough to publish.
@@ -96,9 +146,9 @@ final class AppSettings {
     private func persistAPIKey() {
         let trimmed = apiKey.trimmed
         if trimmed.isEmpty {
-            KeychainStore.delete(account: Keys.apiKey)
+            defaults.removeObject(forKey: Keys.apiKey)
         } else {
-            KeychainStore.save(trimmed, account: Keys.apiKey)
+            defaults.set(trimmed, forKey: Keys.apiKey)
         }
     }
 
@@ -109,6 +159,9 @@ final class AppSettings {
         static let tiktokDraft = "shortcast.tiktokAsDraft"
         static let copywriter  = "shortcast.copywriterModel"
         static let burnHook    = "shortcast.burnHookOverlay"
-        static let apiKey      = "upload-post-api-key"
+        static let reframe     = "shortcast.reframeToVertical"
+        static let apiKey      = "shortcast.apiKey"
+        /// Old Keychain account, read once to migrate into UserDefaults.
+        static let legacyApiKey = "upload-post-api-key"
     }
 }

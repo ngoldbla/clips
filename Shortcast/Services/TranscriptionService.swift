@@ -1,4 +1,5 @@
 import Foundation
+import NaturalLanguage
 import Observation
 @preconcurrency import WhisperKit
 
@@ -17,6 +18,16 @@ struct Transcript: Sendable, Equatable {
 
     var fullText: String {
         segments.map(\.text).joined(separator: " ")
+    }
+
+    /// Language inferred from the transcript text itself (BCP-47, e.g. "es").
+    /// More reliable than Whisper's 30s auto-detect or a small model's guess —
+    /// both of which mislabel (Spanish → "en" / pt-BR). Used to lock the caption
+    /// language to what's actually spoken.
+    var contentLanguage: String? {
+        let recognizer = NLLanguageRecognizer()
+        recognizer.processString(fullText)
+        return recognizer.dominantLanguage?.rawValue
     }
 
     /// One `[MM:SS] text` line per segment — gives the Director timestamps to
@@ -51,6 +62,10 @@ final class TranscriptionService {
     enum Phase: Equatable {
         case idle
         case downloadingModel(fraction: Double)
+        /// After download: WhisperKit compiles/optimises the model for this Mac.
+        /// First run only, slow, and reports no progress — hence a distinct phase
+        /// so the UI doesn't sit at a misleading "Downloading 100%".
+        case preparingModel
         case transcribing
         case ready
         case failed(String)
@@ -64,23 +79,26 @@ final class TranscriptionService {
     /// distil-* models are English-only and turn other languages into phonetic
     /// gibberish, so they are deliberately excluded.
     private static let preferredVariants = [
-        "openai_whisper-large-v3-v20240930_turbo",
-        "openai_whisper-large-v3_turbo",
+        // Full large-v3 transcribes Spanish (and other languages) reliably. The
+        // turbo variant was faster on paper but mis-decoded non-English audio
+        // here, so it's deliberately not preferred.
         "openai_whisper-large-v3",
+        "openai_whisper-large-v3_947MB",
         "openai_whisper-small",
     ]
 
     // MARK: - Public
 
     /// Returns a transcript for `videoURL`, using a sidecar `.srt`/`.vtt` if one
-    /// sits next to it, otherwise transcribing on-device.
-    func transcript(for videoURL: URL) async throws -> Transcript {
+    /// sits next to it, otherwise transcribing on-device. `languageHint` (e.g.
+    /// "es", "Spanish") forces Whisper's decode language; empty = auto-detect.
+    func transcript(for videoURL: URL, languageHint: String = "") async throws -> Transcript {
         if let sidecar = Self.findSidecar(for: videoURL),
            let parsed = Self.parseSubtitles(at: sidecar) {
             phase = .ready
             return parsed
         }
-        return try await transcribeOnDevice(videoURL)
+        return try await transcribeOnDevice(videoURL, languageHint: languageHint)
     }
 
     /// True when a usable transcript exists without needing Whisper.
@@ -90,7 +108,7 @@ final class TranscriptionService {
 
     // MARK: - WhisperKit path
 
-    private func transcribeOnDevice(_ videoURL: URL) async throws -> Transcript {
+    private func transcribeOnDevice(_ videoURL: URL, languageHint: String = "") async throws -> Transcript {
         // Full audio (no cap) → temp .m4a.
         guard let audioURL = try await MediaExtractor.extractAudio(from: videoURL, maxSeconds: nil) else {
             throw TranscriptionError.noAudio
@@ -106,16 +124,41 @@ final class TranscriptionService {
             let folder = try await WhisperKit.download(variant: variant) { @Sendable [weak self] progress in
                 let fraction = progress.fractionCompleted
                 Task { @MainActor in
-                    self?.phase = .downloadingModel(fraction: fraction)
+                    self?.phase = fraction < 1.0 ? .downloadingModel(fraction: fraction) : .preparingModel
                 }
             }
-            whisper = try await WhisperKit(WhisperKitConfig(modelFolder: folder.path, load: true))
+            // Loading specialises the CoreML model for the chosen compute units.
+            // WhisperKit defaults the audio encoder to the Neural Engine, whose
+            // specialization of large-v3 is pathologically slow on an M1 Pro
+            // (~5 min). Forcing GPU skips that ANE specialization and loads +
+            // transcribes far faster, with no first-run stall.
+            phase = .preparingModel
+            Self.log("preparing/loading model \(variant) on GPU…")
+            let compute = ModelComputeOptions(
+                melCompute: .cpuAndGPU,
+                audioEncoderCompute: .cpuAndGPU,
+                textDecoderCompute: .cpuAndGPU)
+            whisper = try await WhisperKit(WhisperKitConfig(
+                modelFolder: folder.path, computeOptions: compute, load: true))
+            Self.log("model loaded")
         }
 
         guard let whisper else { throw TranscriptionError.modelUnavailable }
 
         phase = .transcribing
-        let results = try await whisper.transcribe(audioPath: audioURL.path)
+        // Force language detection (or the user's override) so Spanish audio
+        // isn't silently decoded as English. `language` nil + detectLanguage true
+        // makes WhisperKit pick the spoken language instead of defaulting to en.
+        var options = DecodingOptions()
+        options.task = .transcribe
+        if let code = Self.languageCode(from: languageHint) {
+            options.language = code
+            options.detectLanguage = false
+            Self.log("forcing decode language: \(code)")
+        } else {
+            options.detectLanguage = true
+        }
+        let results = try await whisper.transcribe(audioPath: audioURL.path, decodeOptions: options)
         let segments = results.flatMap(\.segments).map {
             TranscriptSegment(start: Double($0.start), end: Double($0.end), text: $0.text)
         }
@@ -127,6 +170,25 @@ final class TranscriptionService {
 
     nonisolated static func log(_ message: String) {
         FileHandle.standardError.write(Data("[shortcast/transcribe] \(message)\n".utf8))
+    }
+
+    /// Maps a user language hint to a Whisper 2-letter code, or nil to auto-detect.
+    /// Accepts codes ("es") and common names ("Spanish", "español").
+    static func languageCode(from hint: String) -> String? {
+        let h = hint.trimmed.lowercased()
+        guard !h.isEmpty else { return nil }
+        let names: [String: String] = [
+            "spanish": "es", "español": "es", "espanol": "es", "castellano": "es",
+            "english": "en", "inglés": "en", "ingles": "en",
+            "portuguese": "pt", "português": "pt", "portugues": "pt",
+            "french": "fr", "français": "fr", "francais": "fr",
+            "german": "de", "alemán": "de", "aleman": "de", "deutsch": "de",
+            "italian": "it", "italiano": "it",
+            "catalan": "ca", "català": "ca",
+        ]
+        if let mapped = names[h] { return mapped }
+        if h.count == 2 { return h }     // already a code
+        return nil
     }
 
     // MARK: - Sidecar discovery + parsing

@@ -26,7 +26,12 @@ enum JSONVariantParser {
         else {
             throw JSONVariantParserError.noJSONObject
         }
+        return try parse(object: root)
+    }
 
+    /// Same as `parse(_:)` but for an already-deserialized JSON value — lets the
+    /// Director's combined output reuse this when captions arrive inline per clip.
+    static func parse(object root: Any) throws -> GenerationResult {
         var rawVariants: [[String: Any]] = []
         var language: String?
 
@@ -35,9 +40,14 @@ enum JSONVariantParser {
             if let array = object["variants"] as? [[String: Any]] {
                 rawVariants = array
             } else {
-                // Object keyed directly by platform name.
-                rawVariants = SocialPlatform.allCases.compactMap {
-                    object[$0.rawValue] as? [String: Any]
+                // Object keyed directly by platform name (e.g. the Director's
+                // inline `captions` block). Inject the platform key into each
+                // entry so `makeVariant` — which requires a "platform" field —
+                // can build them.
+                rawVariants = SocialPlatform.allCases.compactMap { platform in
+                    guard var dict = object[platform.rawValue] as? [String: Any] else { return nil }
+                    dict["platform"] = platform.rawValue
+                    return dict
                 }
             }
         } else if let array = root as? [[String: Any]] {
@@ -121,8 +131,13 @@ enum JSONVariantParser {
         } else {
             rawList = []
         }
-        return rawList
+        let cleaned = rawList
             .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "# ")) }
             .filter { !$0.isEmpty }
+
+        // Small models sometimes repeat the same tag many times — keep the first
+        // occurrence of each (case-insensitively) and drop the rest.
+        var seen = Set<String>()
+        return cleaned.filter { seen.insert($0.lowercased()).inserted }
     }
 }

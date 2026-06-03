@@ -11,8 +11,8 @@ final class WorkspaceModel {
     /// What the user wants to do with a dropped video. Chosen explicitly on the
     /// drop screen rather than guessed from the video's length.
     enum InputMode: String, CaseIterable, Identifiable, Sendable {
-        case caption   // short video → captions → publish (the original flow)
         case shorts    // long video → cut into clips → caption each → publish
+        case caption   // short video → captions → publish (the original flow)
 
         var id: String { rawValue }
 
@@ -45,8 +45,9 @@ final class WorkspaceModel {
         }
     }
 
-    /// The selected mode. Drives routing in `process(url:)`.
-    var inputMode: InputMode = .caption
+    /// The selected mode. Drives routing in `process(url:)`. Defaults to making
+    /// shorts from a long video — the app's headline flow.
+    var inputMode: InputMode = .shorts
 
     enum Phase: Equatable {
         case empty
@@ -163,54 +164,88 @@ final class WorkspaceModel {
     }
 
     private func runShortsPipeline(job: VideoJob, modelManager: ModelManager, settings: AppSettings) async {
+        let pipelineStart = Date()
+        Self.log("pipeline start — copywriter=\(settings.copywriterModel.rawValue)")
         do {
             // 1. Transcript: sidecar .srt/.vtt if present, else WhisperKit.
             phase = .transcribing
-            let transcript = try await transcription.transcript(for: job.url)
+            let t0 = Date()
+            let transcript = try await transcription.transcript(
+                for: job.url, languageHint: settings.languageOverride)
+            // Trust the language of the actual text over Whisper's 30s auto-detect.
+            let captionLanguage = transcript.contentLanguage ?? transcript.language
+            Self.log("transcript ready in \(Self.elapsed(since: t0)) — whisper=\(transcript.language ?? "?"), text=\(captionLanguage ?? "?")")
             try Task.checkCancellation()
 
             // 2. Find the viral moments — one Qwen pass over the full transcript.
             phase = .findingMoments
-            await modelManager.prepareDirectorIfNeeded()
+            let t1 = Date()
+            await modelManager.prepareDirector(profile: settings.copywriterModel.directorProfile)
+            Self.log("director ready in \(Self.elapsed(since: t1)) — \(settings.copywriterModel.directorProfile.displayName)")
+            // The two text models write the captions in this same pass.
+            let useInlineCaptions = settings.copywriterModel.usesInlineCaptions
+            let t2 = Date()
             let candidates = try await modelManager.momentFinder.findMoments(
-                transcript: transcript.srtLike())
+                transcript: transcript.srtLike(),
+                includeCaptions: useInlineCaptions,
+                language: captionLanguage,
+                styleExamples: settings.styleExamples)
+            Self.log("found \(candidates.count) moment(s) in \(Self.elapsed(since: t2)), captions inline=\(useInlineCaptions)")
             try Task.checkCancellation()
 
             // Seed cards; they fill in as each clip is cut + captioned.
             clips = candidates.map {
                 ShortClip(candidate: $0,
                           transcriptSlice: transcript.slice(start: $0.start, end: $0.end),
-                          overlayEnabled: settings.burnHookOverlay)
+                          overlayEnabled: settings.burnHookOverlay,
+                          reframeEnabled: settings.reframeToVertical)
             }
             phase = .shortsResults
 
-            // On tight RAM, free the Director before Gemma captioning.
-            if settings.copywriterModel == .gemmaE4B {
+            // On tight RAM, free the Director before the Gemma E4B clip-watcher.
+            if settings.copywriterModel.watchesClips {
                 modelManager.freeDirectorIfMemoryTight()
             }
 
             // 3+4. Cut, then caption, each clip in turn (one MLX engine → serial).
-            for clip in clips {
+            for (index, clip) in clips.enumerated() {
                 try Task.checkCancellation()
                 do {
                     clip.stage = .cutting
+                    let tCut = Date()
                     let clipURL = try await MediaExtractor.cutClip(
                         from: job.url,
                         start: clip.candidate.start,
                         duration: clip.candidate.duration)
                     clip.clipJob = VideoJob(url: clipURL, durationSeconds: clip.candidate.duration)
+                    // Only horizontal clips get the vertical-reframe option.
+                    clip.isLandscape = await VerticalReframer.isLandscape(url: clipURL)
 
-                    clip.stage = .captioning
-                    let result = try await captionClip(clip, modelManager: modelManager, settings: settings)
-                    clip.variants = result.variants
-                    clip.detectedLanguage = result.detectedLanguage
-                    clip.stage = .ready
+                    if !clip.candidate.variants.isEmpty {
+                        // Captions already came from the Director's one pass.
+                        clip.variants = clip.candidate.variants
+                        clip.detectedLanguage = captionLanguage
+                        clip.stage = .ready
+                        Self.log("clip \(index + 1)/\(clips.count) ready — cut \(Self.elapsed(since: tCut)), captions inline")
+                    } else {
+                        clip.stage = .captioning
+                        let tCap = Date()
+                        let result = try await captionClip(
+                            clip, modelManager: modelManager, settings: settings,
+                            transcriptLanguage: captionLanguage)
+                        clip.variants = result.variants
+                        clip.detectedLanguage = result.detectedLanguage
+                        clip.stage = .ready
+                        Self.log("clip \(index + 1)/\(clips.count) ready — cut \(Self.elapsed(since: tCut, to: tCap)), caption \(Self.elapsed(since: tCap))")
+                    }
                 } catch is CancellationError {
                     throw CancellationError()
                 } catch {
                     clip.stage = .failed(error.localizedDescription)
+                    Self.log("clip \(index + 1)/\(clips.count) failed: \(error.localizedDescription)")
                 }
             }
+            Self.log("pipeline done — \(clips.count) clip(s) in \(Self.elapsed(since: pipelineStart)) total")
         } catch is CancellationError {
             cleanupClipTempFiles()
             clips = []
@@ -225,7 +260,14 @@ final class WorkspaceModel {
         }
     }
 
-    private func captionClip(_ clip: ShortClip, modelManager: ModelManager, settings: AppSettings) async throws -> GenerationResult {
+    private func captionClip(_ clip: ShortClip, modelManager: ModelManager, settings: AppSettings,
+                             transcriptLanguage: String?) async throws -> GenerationResult {
+        // Lock the output language to what Whisper detected unless the user set a
+        // manual override — small captioners otherwise drift (e.g. Spanish → pt-BR).
+        let effectiveLanguage = settings.languageOverride.trimmed.isEmpty
+            ? (transcriptLanguage ?? "")
+            : settings.languageOverride
+
         switch settings.copywriterModel {
         case .gemmaE4B:
             guard let engine = modelManager.engine, let clipJob = clip.clipJob else {
@@ -234,20 +276,33 @@ final class WorkspaceModel {
             return try await GemmaService.generate(
                 job: clipJob,
                 engine: engine,
-                languageOverride: settings.languageOverride,
+                languageOverride: effectiveLanguage,
                 styleExamples: settings.styleExamples)
-        case .qwen35_9b:
-            await modelManager.prepareDirectorIfNeeded()
+        case .gemma12B, .qwen35_9b:
+            // Inline-caption models normally write captions in the moment-finding
+            // pass; this is the fallback per-clip path using the same Director.
+            await modelManager.prepareDirector(profile: settings.copywriterModel.directorProfile)
             return try await modelManager.momentFinder.caption(
                 transcriptSlice: clip.transcriptSlice,
                 hook: clip.candidate.hook,
-                languageOverride: settings.languageOverride,
+                languageOverride: effectiveLanguage,
                 styleExamples: settings.styleExamples)
         }
     }
 
     func cancelPipeline() {
         pipelineTask?.cancel()
+    }
+
+    // MARK: - Timing logs (stderr; visible when launched from the terminal)
+
+    nonisolated static func log(_ message: String) {
+        FileHandle.standardError.write(Data("[shortcast/pipeline] \(message)\n".utf8))
+    }
+
+    /// Formatted seconds elapsed between two dates (defaults `to` = now).
+    nonisolated static func elapsed(since start: Date, to end: Date = Date()) -> String {
+        String(format: "%.1fs", end.timeIntervalSince(start))
     }
 
     // MARK: - Reset
@@ -318,6 +373,37 @@ final class WorkspaceModel {
 
         for clip in clips where clip.isApproved && clip.isReadyToPublish {
             await clip.publish(settings: settings)
+            if let error = clip.publishError, error.localizedCaseInsensitiveContains("limit") {
+                break
+            }
+        }
+    }
+
+    /// True while "Schedule all" runs.
+    private(set) var isSchedulingAll = false
+
+    /// The dates each approved, ready clip would be scheduled to: the first at
+    /// `start`, then one every `intervalDays`. Used for the schedule preview.
+    func schedulePlan(start: Date, intervalDays: Int) -> [(clip: ShortClip, date: Date)] {
+        let cal = Calendar.current
+        var date = start
+        var plan: [(ShortClip, Date)] = []
+        for clip in clips where clip.isApproved && clip.isReadyToPublish {
+            plan.append((clip, date))
+            date = cal.date(byAdding: .day, value: max(1, intervalDays), to: date) ?? date
+        }
+        return plan
+    }
+
+    /// Schedules every approved, ready clip: the first at `start`, then one every
+    /// `intervalDays`. Sequential; stops cleanly on the monthly limit.
+    func scheduleAllApproved(start: Date, intervalDays: Int, settings: AppSettings) async {
+        guard !isSchedulingAll else { return }
+        isSchedulingAll = true
+        defer { isSchedulingAll = false }
+
+        for (clip, date) in schedulePlan(start: start, intervalDays: intervalDays) {
+            await clip.publish(settings: settings, scheduledDate: date)
             if let error = clip.publishError, error.localizedCaseInsensitiveContains("limit") {
                 break
             }

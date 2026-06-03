@@ -105,6 +105,7 @@ enum PromptBuilder {
 
     Rules:
     - hashtags are plain words, with NO leading '#'.
+    - Each hashtag must be unique — never repeat the same tag.
     - Exactly three variants, one per platform, in the order above.
     - Never invent facts that are not visible or audible in the video.
     - Output the JSON object and nothing else.
@@ -147,6 +148,7 @@ enum PromptBuilder {
 
     Rules:
     - hashtags are plain words, with NO leading '#'.
+    - Each hashtag must be unique — never repeat the same tag.
     - Exactly three variants, one per platform, in the order above.
     - Never invent facts that are not in the transcript.
     - Output the JSON object and nothing else.

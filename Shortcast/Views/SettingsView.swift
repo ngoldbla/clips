@@ -72,15 +72,15 @@ struct SettingsView: View {
                 pipelineRole(
                     step: "2", icon: "wand.and.stars",
                     title: "Find the viral moments",
-                    model: "Qwen 3.5 9B",
-                    detail: "Reads the whole transcript and picks the best clips. Always Qwen — not changeable.",
+                    model: settings.copywriterModel.directorProfile.displayName,
+                    detail: "Reads the whole transcript and picks the best clips. Follows your model choice below.",
                     status: directorStatus)
                 pipelineRole(
                     step: "3", icon: "text.bubble",
                     title: "Write the captions",
                     model: settings.copywriterModel.displayName,
                     detail: "You choose this one ↓",
-                    status: settings.copywriterModel == .gemmaE4B ? modelStatus : directorStatus)
+                    status: settings.copywriterModel.watchesClips ? modelStatus : directorStatus)
             }
 
             Section("Caption writer") {
@@ -92,10 +92,10 @@ struct SettingsView: View {
                 Text(settings.copywriterModel.tagline)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Text("Applies to shorts cut from a long video. Captioning a single short video always uses Gemma (it watches the clip directly).")
+                Text("Picks the model that finds the moments and writes the captions for shorts cut from a long video. Captioning a single short video always uses Gemma E4B (it watches the clip directly).")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                if settings.copywriterModel == .gemmaE4B && modelManager.systemRAMGB < 24 {
+                if settings.copywriterModel.watchesClips && modelManager.systemRAMGB < 24 {
                     Label("On this Mac, Shortcast frees the moment-finder before captioning to stay within memory.",
                           systemImage: "memorychip")
                         .font(.caption)
@@ -106,6 +106,13 @@ struct SettingsView: View {
             Section("Text hook overlay") {
                 Toggle("Burn an AI text hook into each short", isOn: $settings.burnHookOverlay)
                 Text("Shows a short hook over the top of each clip for the first few seconds. The default for new shorts — you can flip it per clip. The text is rendered into the video when you publish.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Vertical reframing") {
+                Toggle("Auto-convert horizontal clips to vertical 9:16", isOn: $settings.reframeToVertical)
+                Text("Tracks the speaker with on-device Vision and reframes 16:9 → 9:16, falling back to a blurred background when there's no clear face. The default for new horizontal clips — you can flip it per clip. Applied when you publish.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
