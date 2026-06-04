@@ -134,10 +134,11 @@ final class MomentFinderService {
 
         let s = profile.sampling
         var params = GenerateParameters(
-            // Captions per clip need more room than bare moments, but cap it: a
-            // runaway (incoherent) generation otherwise fills the KV cache and
-            // can OOM with a big model. 4096 fits several clips' caption JSON.
-            maxTokens: includeCaptions ? 4096 : s.maxTokens,
+            // Captions per clip need much more room than bare moments — a long
+            // video can yield 5-6 clips, each with three platforms' caption
+            // package (Instagram alone wants 20-30 hashtags). 6144 covers that;
+            // the repetition penalty stops runaway loops from filling it.
+            maxTokens: includeCaptions ? 6144 : s.maxTokens,
             temperature: s.temperature,
             topP: s.topP,
             topK: s.topK,
@@ -302,43 +303,106 @@ enum MomentJSONParser {
     static let maxDuration = 60.0
 
     static func parse(_ raw: String) -> [ClipCandidate] {
-        guard let jsonString = JSONVariantParser.extractJSONObject(from: raw),
-              let data = jsonString.data(using: .utf8),
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return [] }
-
-        let entries = (root["clips"] as? [[String: Any]]) ?? []
-        MomentFinderService.log("parser: model returned \(entries.count) raw clip entries")
-        var clips: [ClipCandidate] = []
-        for entry in entries {
-            guard let start = seconds(from: entry["start"]),
-                  let end = seconds(from: entry["end"]),
-                  end > start
-            else { continue }
-
-            var clip = ClipCandidate(
-                start: start,
-                end: end,
-                why: string(entry, "why", "reason", "rationale"),
-                hook: string(entry, "hook", "title", "headline"),
-                overlay: string(entry, "overlay", "onscreen", "caption"))
-
-            // Inline 3-platform caption package (Qwen one-pass mode). The captions
-            // object is keyed by platform, which JSONVariantParser already handles.
-            if let captions = entry["captions"] ?? entry["posts"],
-               let result = try? JSONVariantParser.parse(object: captions) {
-                clip.variants = result.variants
-            }
-
-            // Validate duration: clamp if too long, drop if too short.
-            if clip.duration > maxDuration {
-                clip.end = clip.start + maxDuration
-            }
-            guard clip.duration >= minDuration else { continue }
-
-            clips.append(clip)
+        var entries: [[String: Any]] = []
+        if let jsonString = JSONVariantParser.extractJSONObject(from: raw),
+           let root = JSONVariantParser.deserializeTolerant(jsonString) as? [String: Any],
+           let clipsArray = root["clips"] as? [[String: Any]] {
+            entries = clipsArray
         }
-        return clips
+        // Fallback: the whole array failed to parse (a token drifted, or the
+        // generation was truncated mid-JSON). Salvage every complete clip object
+        // on its own, so one broken/cut-off clip doesn't drop all the good ones.
+        if entries.isEmpty {
+            entries = salvageClipEntries(from: raw)
+            if !entries.isEmpty {
+                MomentFinderService.log("parser: strict parse failed — salvaged \(entries.count) clip object(s)")
+            }
+        }
+        MomentFinderService.log("parser: \(entries.count) raw clip entries")
+        return entries.compactMap(buildClip)
+    }
+
+    /// Builds a validated `ClipCandidate` from one raw clip object, or nil if it
+    /// lacks a usable time range / is too short.
+    private static func buildClip(from entry: [String: Any]) -> ClipCandidate? {
+        guard let start = seconds(from: entry["start"]),
+              let end = seconds(from: entry["end"]),
+              end > start
+        else { return nil }
+
+        var clip = ClipCandidate(
+            start: start,
+            end: end,
+            why: string(entry, "why", "reason", "rationale"),
+            hook: string(entry, "hook", "title", "headline"),
+            overlay: string(entry, "overlay", "onscreen", "caption"))
+
+        // Inline 3-platform caption package. The captions object is keyed by
+        // platform, which JSONVariantParser already handles.
+        if let captions = entry["captions"] ?? entry["posts"],
+           let result = try? JSONVariantParser.parse(object: captions) {
+            clip.variants = result.variants
+        }
+
+        // Validate duration: clamp if too long, drop if too short.
+        if clip.duration > maxDuration {
+            clip.end = clip.start + maxDuration
+        }
+        guard clip.duration >= minDuration else { return nil }
+        return clip
+    }
+
+    /// Scans the raw text for complete balanced `{…}` objects that look like
+    /// clips (they carry a "start" and "end"), parsing each independently. This
+    /// recovers the good clips even when the enclosing array is truncated (token
+    /// limit) or one clip is malformed.
+    private static func salvageClipEntries(from raw: String) -> [[String: Any]] {
+        let chars = Array(raw)
+        var entries: [[String: Any]] = []
+        var i = 0
+        while i < chars.count {
+            guard chars[i] == "{", let close = matchingBrace(chars, from: i) else {
+                i += 1
+                continue
+            }
+            let candidate = String(chars[i...close])
+            if let obj = JSONVariantParser.deserializeTolerant(candidate) as? [String: Any],
+               obj["start"] != nil, obj["end"] != nil {
+                entries.append(obj)
+                i = close + 1
+            } else {
+                i += 1
+            }
+        }
+        return entries
+    }
+
+    /// Index of the `}` matching the `{` at `start`, respecting string literals,
+    /// or nil if the object is unbalanced (e.g. truncated).
+    private static func matchingBrace(_ chars: [Character], from start: Int) -> Int? {
+        var depth = 0
+        var inString = false
+        var escaped = false
+        var i = start
+        while i < chars.count {
+            let c = chars[i]
+            if inString {
+                if escaped { escaped = false }
+                else if c == "\\" { escaped = true }
+                else if c == "\"" { inString = false }
+            } else {
+                switch c {
+                case "\"": inString = true
+                case "{": depth += 1
+                case "}":
+                    depth -= 1
+                    if depth == 0 { return i }
+                default: break
+                }
+            }
+            i += 1
+        }
+        return nil
     }
 
     /// Parses a timestamp value into seconds. Accepts a number, or strings like

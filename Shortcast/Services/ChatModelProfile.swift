@@ -75,14 +75,18 @@ struct ChatModelProfile: Sendable {
         displayName: "Gemma 4 12B",
         factoryKind: .llm,
         loader: .gemma4Text,
-        // Lower temperature than Gemma's chat default (1.0): we need strict JSON,
-        // and high temp makes the model drift mid-structure (corrupted keys, bad
-        // commas) so the clips JSON won't parse. KV cache is left unquantized
-        // (kvBits nil): the 12B's full-attention layers use a 512 head dim that
-        // overflows the fused/quantized SDPA Metal kernel, so we fall back to a
-        // manual matmul+softmax attention that needs a plain cache.
+        // Moderate temperature + a repetition penalty. We need strict JSON, but
+        // the two failure modes pull opposite ways: too high (≥0.6) and the
+        // manual fp32 attention's slight logit perturbation mis-samples a
+        // structural token and breaks the JSON; too low (≤0.2) and it falls into
+        // a repetition loop (e.g. spamming the same hashtags) that eats the whole
+        // token budget. 0.35 sits between them, and repetitionPenalty kills the
+        // loops directly. KV cache is unquantized (kvBits nil): the 12B's
+        // full-attention layers use a 512 head dim that overflows the
+        // fused/quantized SDPA Metal kernel, so we fall back to a manual
+        // matmul+softmax attention on a plain cache.
         sampling: SamplingConfig(
-            temperature: 0.6, topP: 0.9, topK: 40, minP: 0,
-            repetitionPenalty: nil, maxTokens: 4096,
+            temperature: 0.35, topP: 0.9, topK: 30, minP: 0,
+            repetitionPenalty: 1.1, maxTokens: 4096,
             maxKVSize: nil, kvBits: nil))
 }

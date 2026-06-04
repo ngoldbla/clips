@@ -21,12 +21,45 @@ enum JSONVariantParser {
 
     static func parse(_ raw: String) throws -> GenerationResult {
         guard let jsonString = extractJSONObject(from: raw),
-              let data = jsonString.data(using: .utf8),
-              let root = try? JSONSerialization.jsonObject(with: data)
+              let root = deserializeTolerant(jsonString)
         else {
             throw JSONVariantParserError.noJSONObject
         }
         return try parse(object: root)
+    }
+
+    /// Deserializes a JSON object string, repairing the JSON-breaking glitches
+    /// small models occasionally emit before giving up. Returns the parsed value
+    /// (object or array) or nil.
+    static func deserializeTolerant(_ jsonString: String) -> Any? {
+        if let data = jsonString.data(using: .utf8),
+           let root = try? JSONSerialization.jsonObject(with: data) {
+            return root
+        }
+        let repaired = repairDrift(jsonString)
+        if let data = repaired.data(using: .utf8),
+           let root = try? JSONSerialization.jsonObject(with: data) {
+            return root
+        }
+        return nil
+    }
+
+    /// Fixes the two glitches that break otherwise-good model JSON: a property
+    /// name that dropped its opening quote (`  foo": …` → `  "foo": …`, a token
+    /// the model sometimes mis-samples) and trailing commas before `}`/`]`.
+    static func repairDrift(_ json: String) -> String {
+        var s = json
+        // Key missing its opening quote (after `{`, `,` or a newline).
+        s = regexReplace(s, #"([\n\r{,]\s*)([A-Za-z_][A-Za-z0-9_]*)("\s*:)"#, with: "$1\"$2$3")
+        // Trailing comma before a closing brace/bracket.
+        s = regexReplace(s, #",(\s*[}\]])"#, with: "$1")
+        return s
+    }
+
+    private static func regexReplace(_ s: String, _ pattern: String, with template: String) -> String {
+        guard let re = try? NSRegularExpression(pattern: pattern) else { return s }
+        return re.stringByReplacingMatches(
+            in: s, range: NSRange(s.startIndex..., in: s), withTemplate: template)
     }
 
     /// Same as `parse(_:)` but for an already-deserialized JSON value — lets the

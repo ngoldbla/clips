@@ -94,9 +94,13 @@ enum VideoOverlayRenderer {
         let bandWidth = w * 0.88
         let innerWidth = bandWidth - padding * 2
 
+        let para = NSMutableParagraphStyle()
+        para.alignment = .center
+        para.lineBreakMode = .byWordWrapping
         let attributes: [NSAttributedString.Key: Any] = [
             .font: font,
             .foregroundColor: NSColor.white,
+            .paragraphStyle: para,
         ]
         let attributed = NSAttributedString(string: text, attributes: attributes)
         let textBounds = attributed.boundingRect(
@@ -114,14 +118,44 @@ enum VideoOverlayRenderer {
         band.cornerRadius = bandHeight * 0.28
         band.masksToBounds = true
 
-        let textLayer = CATextLayer()
-        textLayer.string = attributed
-        textLayer.isWrapped = true
-        textLayer.alignmentMode = .center
-        textLayer.contentsScale = 2
+        // Render the (possibly multi-line) text to a bitmap and show it as the
+        // layer's contents. CATextLayer mis-positions / clips wrapped text in
+        // AVFoundation's offline render server (the band drew but a 2-line hook
+        // overflowed it); a pre-rendered, vertically-centred image is exact and
+        // orientation-safe, and renders identically on screen and in the export.
+        let textLayer = CALayer()
         textLayer.frame = CGRect(x: padding, y: padding, width: innerWidth, height: textHeight)
+        textLayer.contentsScale = 3
+        textLayer.contentsGravity = .resize
+        textLayer.contents = renderTextImage(
+            attributed, size: CGSize(width: innerWidth, height: textHeight))
         band.addSublayer(textLayer)
         return band
+    }
+
+    /// Draws `text` vertically centred into a 3× bitmap for use as a CALayer's
+    /// `contents`. Avoids CATextLayer's offline-render quirks (invisible / clipped
+    /// wrapped text).
+    private static func renderTextImage(_ text: NSAttributedString, size: CGSize) -> CGImage? {
+        let scale: CGFloat = 3
+        let pxW = max(1, Int(size.width * scale))
+        let pxH = max(1, Int(size.height * scale))
+        guard let ctx = CGContext(
+            data: nil, width: pxW, height: pxH, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        let nsCtx = NSGraphicsContext(cgContext: ctx, flipped: false)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = nsCtx
+        ctx.scaleBy(x: scale, y: scale)
+        let bounds = text.boundingRect(
+            with: CGSize(width: size.width, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading])
+        let y = max(0, (size.height - bounds.height) / 2)
+        text.draw(with: CGRect(x: 0, y: y, width: size.width, height: ceil(bounds.height)),
+                  options: [.usesLineFragmentOrigin, .usesFontLeading])
+        NSGraphicsContext.restoreGraphicsState()
+        return ctx.makeImage()
     }
 
     /// Visible from 0→hold, fades over 0.5s, then stays hidden.
