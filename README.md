@@ -127,21 +127,31 @@ The model downloads once on first use. Everything runs offline afterwards.
 
 ## Install
 
-> Releases are unsigned, open-source binaries. macOS will flag them the first time —
-> that's normal.
+> Releases are unsigned (not yet notarized), so macOS Gatekeeper blocks them the
+> first time. This is expected — one Terminal command fixes it.
 
 1. Download `Shortcast.dmg` from the [latest release](../../releases/latest).
 2. Open the DMG and drag **Shortcast** to your Applications folder.
-3. Double-click Shortcast. macOS says it can't verify the developer.
-4. Open **System Settings → Privacy & Security**, scroll to the message about Shortcast,
-   and click **Open Anyway**. Confirm once. macOS remembers from now on.
+3. Strip the download-quarantine flag, then open the app normally:
+
+   ```bash
+   xattr -dr com.apple.quarantine /Applications/Shortcast.app
+   ```
+
+   Now double-click Shortcast and it launches.
+
+> [!NOTE]
+> **Seeing “Shortcast.app is damaged and can’t be opened”?** That's the same
+> Gatekeeper quarantine — on Apple Silicon, recent macOS shows *“damaged”*
+> instead of *“unidentified developer”* and hides the **Open Anyway** button. The
+> app is **not** actually damaged; the `xattr` command above is the fix.
 
 <details>
-<summary>Power-user shortcut</summary>
+<summary>Prefer the GUI? (older macOS)</summary>
 
-```bash
-xattr -dr com.apple.quarantine /Applications/Shortcast.app
-```
+Double-click Shortcast, then open **System Settings → Privacy & Security**, scroll
+to the message about Shortcast and click **Open Anyway**. On recent macOS this
+button often doesn't appear for unsigned apps — use the Terminal command instead.
 </details>
 
 ### First run
