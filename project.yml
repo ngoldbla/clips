@@ -82,6 +82,8 @@ targets:
           CODE_SIGN_IDENTITY: "Developer ID Application"
           ENABLE_HARDENED_RUNTIME: YES
           CODE_SIGN_ENTITLEMENTS: Clipmunk/Clipmunk.entitlements
+          # Do NOT inject get-task-allow — Apple's notary service rejects it.
+          CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
           OTHER_CODE_SIGN_FLAGS: "--timestamp"
 
   # Developer-only command-line probe. Runs the real generation path
