@@ -247,6 +247,7 @@ sent to Upload-Post over HTTPS when you publish. It is never written into the re
 
 ## Acknowledgements
 
+- **The Shortcast project** — the open-source (Apache 2.0) app Clipmunk is forked from and built upon.
 - **Google** for the Gemma 4 family — open weights with full multimodal capability.
 - **Apple's MLX team** for [MLX](https://github.com/ml-explore/mlx-swift) and
   [mlx-swift-lm](https://github.com/ml-explore/mlx-swift-lm).
@@ -258,7 +259,8 @@ sent to Upload-Post over HTTPS when you publish. It is never written into the re
 
 ## License
 
-Apache License 2.0 — see [LICENSE](LICENSE).
+Apache License 2.0 — see [LICENSE](LICENSE). Clipmunk is a derivative work of the
+Shortcast project (Apache 2.0); the original attribution is retained in [NOTICE](NOTICE).
 
 Third-party components are listed in [NOTICE](NOTICE). The vendored
 `gemma-4-swift-mlx` runtime is MIT-licensed; the Gemma 4 weights are governed by
