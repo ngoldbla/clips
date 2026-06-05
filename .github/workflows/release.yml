@@ -1,7 +1,8 @@
 name: Release
 
-# Builds an unsigned .dmg and attaches it to the GitHub Release when a
-# version tag (e.g. v0.1.0) is pushed. Also runnable manually.
+# Builds a Developer ID-signed, notarized, stapled Clipmunk.dmg.
+# - workflow_dispatch: full build + notarize, DMG uploaded as an artifact (no release).
+# - push tag v*: same, plus the DMG is attached to the GitHub Release.
 on:
   push:
     tags: ["v*"]
@@ -12,61 +13,114 @@ permissions:
 
 jobs:
   build-dmg:
-    # macos-26 ships Xcode 26 — required because the vendored gemma-4-swift-mlx
-    # uses Swift expressions that the Xcode 16.4 compiler on macos-15 fails to
-    # type-check in reasonable time (LoRA / TurboQuant). Newer Swift is fine.
     runs-on: macos-26
+    env:
+      APP_NAME: Clipmunk
+      SCHEME: Clipmunk
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Toolchain versions
-        run: |
-          xcodebuild -version
-          swift --version
+        run: xcodebuild -version
 
-      - name: Install XcodeGen
-        run: brew install xcodegen
+      - name: Install build tools
+        run: brew install xcodegen create-dmg
+
+      - name: Ensure Metal Toolchain (Xcode 26 unbundles it; MLX needs it)
+        run: |
+          if ! xcodebuild -showComponent MetalToolchain 2>/dev/null | grep -q "installed"; then
+            xcodebuild -downloadComponent MetalToolchain
+          fi
+
+      - name: Import Developer ID cert into a temporary keychain
+        env:
+          DEVID_CERT_P12_BASE64: ${{ secrets.DEVID_CERT_P12_BASE64 }}
+          DEVID_CERT_PASSWORD: ${{ secrets.DEVID_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/clipmunk.keychain-db"
+          KPW="$(uuidgen)"
+          echo "$DEVID_CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KPW" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KPW" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" \
+            -P "$DEVID_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KPW" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          echo "KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
 
       - name: Generate Xcode project
         run: xcodegen generate
 
-      - name: Build Shortcast (Release, unsigned)
-        run: |
-          xcodebuild \
-            -project Shortcast.xcodeproj \
-            -scheme Shortcast \
-            -configuration Release \
-            -derivedDataPath build \
-            -skipMacroValidation \
-            -skipPackagePluginValidation \
-            CODE_SIGNING_ALLOWED=NO \
-            clean build
-
-      - name: Package .dmg
+      - name: Build (Release, Developer ID, hardened runtime)
         run: |
           set -euo pipefail
-          APP="build/Build/Products/Release/Shortcast.app"
-          test -d "$APP"
-          STAGE="dist/dmg"
-          mkdir -p "$STAGE"
-          cp -R "$APP" "$STAGE/"
-          ln -s /Applications "$STAGE/Applications"
-          hdiutil create \
-            -volname "Shortcast" \
-            -srcfolder "$STAGE" \
-            -ov -format UDZO \
-            "dist/Shortcast.dmg"
+          xcodebuild -project Clipmunk.xcodeproj -scheme "$SCHEME" -configuration Release \
+            -derivedDataPath build -skipMacroValidation -skipPackagePluginValidation \
+            -destination 'platform=macOS' \
+            CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="Developer ID Application" \
+            DEVELOPMENT_TEAM="${{ secrets.APPLE_TEAM_ID }}" \
+            OTHER_CODE_SIGN_FLAGS="--timestamp --options runtime" \
+            clean build
+          codesign --verify --strict --verbose=2 "build/Build/Products/Release/$APP_NAME.app"
 
-      - name: Upload .dmg artifact
+      - name: Notarize and staple the app
+        env:
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          APP="build/Build/Products/Release/$APP_NAME.app"
+          printf '%s' "$NOTARY_KEY_P8" > "$RUNNER_TEMP/key.p8"
+          ditto -c -k --keepParent "$APP" "$RUNNER_TEMP/$APP_NAME.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/$APP_NAME.zip" \
+            --key "$RUNNER_TEMP/key.p8" --key-id "$NOTARY_KEY_ID" \
+            --issuer "$NOTARY_ISSUER_ID" --wait
+          xcrun stapler staple "$APP"
+
+      - name: Build, sign, notarize, and staple the DMG
+        env:
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          APP="build/Build/Products/Release/$APP_NAME.app"
+          mkdir -p dist
+          # create-dmg can exit nonzero on AppleScript timing even on success → retry, then check the file.
+          for i in 1 2 3; do
+            create-dmg --volname "Clipmunk" --volicon "assets/Clipmunk.icns" \
+              --window-size 540 380 --icon-size 110 \
+              --icon "$APP_NAME.app" 150 190 --app-drop-link 390 190 --hdiutil-quiet \
+              "dist/$APP_NAME.dmg" "$APP" && break || sleep 5
+          done
+          test -f "dist/$APP_NAME.dmg"
+          codesign --force --sign "Developer ID Application" --timestamp "dist/$APP_NAME.dmg"
+          xcrun notarytool submit "dist/$APP_NAME.dmg" \
+            --key "$RUNNER_TEMP/key.p8" --key-id "$NOTARY_KEY_ID" \
+            --issuer "$NOTARY_ISSUER_ID" --wait
+          xcrun stapler staple "dist/$APP_NAME.dmg"
+
+      - name: Verify notarization
+        run: |
+          spctl -a -t open --context context:primary-signature -v "dist/$APP_NAME.dmg" || true
+          xcrun stapler validate "dist/$APP_NAME.dmg"
+
+      - name: Upload DMG artifact (always)
         uses: actions/upload-artifact@v4
         with:
-          name: Shortcast-dmg
-          path: dist/Shortcast.dmg
+          name: Clipmunk-dmg
+          path: dist/Clipmunk.dmg
 
-      - name: Attach .dmg to the Release
+      - name: Attach DMG to the Release (tags only)
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/Shortcast.dmg
+          files: dist/Clipmunk.dmg
           fail_on_unmatched_files: true
+
+      - name: Clean up keychain
+        if: always()
+        run: security delete-keychain "$KEYCHAIN" || true
