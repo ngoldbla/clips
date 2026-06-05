@@ -1,8 +1,8 @@
-# XcodeGen project definition for Shortcast.
+# XcodeGen project definition for Clipmunk.
 # Regenerate the .xcodeproj with:  xcodegen generate
-name: Shortcast
+name: Clipmunk
 options:
-  bundleIdPrefix: app.shortcast
+  bundleIdPrefix: com.github.ngoldbla
   deploymentTarget:
     macOS: "15.0"
   createIntermediateGroups: true
@@ -35,11 +35,11 @@ packages:
     from: "0.9.0"
 
 targets:
-  Shortcast:
+  Clipmunk:
     type: application
     platform: macOS
     sources:
-      - path: Shortcast
+      - path: Clipmunk
     dependencies:
       - package: Gemma4Swift
         product: Gemma4Swift
@@ -57,15 +57,13 @@ targets:
         product: WhisperKit
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: app.shortcast.Shortcast
-        PRODUCT_NAME: Shortcast
+        PRODUCT_BUNDLE_IDENTIFIER: com.github.ngoldbla.Clipmunk
+        PRODUCT_NAME: Clipmunk
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
         GENERATE_INFOPLIST_FILE: NO
-        INFOPLIST_FILE: Shortcast/Info.plist
-        CODE_SIGN_IDENTITY: "-"
-        CODE_SIGN_STYLE: Manual
-        ENABLE_HARDENED_RUNTIME: NO
+        INFOPLIST_FILE: Clipmunk/Info.plist
+        DEVELOPMENT_TEAM: XAHTA7SZUC
         SWIFT_VERSION: "6.0"
         SWIFT_STRICT_CONCURRENCY: complete
         DEAD_CODE_STRIPPING: YES
@@ -74,26 +72,37 @@ targets:
         COMBINE_HIDPI_IMAGES: YES
         ENABLE_PREVIEWS: YES
         MACOSX_DEPLOYMENT_TARGET: "15.0"
+      configs:
+        # Local/dev builds stay unsigned so no certificate is required.
+        Debug:
+          CODE_SIGNING_ALLOWED: NO
+        # Release is the distributable, Developer ID–signed, hardened build.
+        Release:
+          CODE_SIGN_STYLE: Manual
+          CODE_SIGN_IDENTITY: "Developer ID Application"
+          ENABLE_HARDENED_RUNTIME: YES
+          CODE_SIGN_ENTITLEMENTS: Clipmunk/Clipmunk.entitlements
+          OTHER_CODE_SIGN_FLAGS: "--timestamp"
 
   # Developer-only command-line probe. Runs the real generation path
   # (MediaExtractor → Gemma4Engine → JSONVariantParser) headlessly.
-  shortcast-probe:
+  clipmunk-probe:
     type: tool
     platform: macOS
     sources:
       - path: Probe
-      - path: Shortcast/Models/PostVariant.swift
-      - path: Shortcast/Models/VideoJob.swift
-      - path: Shortcast/Models/String+Trimmed.swift
-      - path: Shortcast/Services/MediaExtractor.swift
-      - path: Shortcast/Services/PromptBuilder.swift
-      - path: Shortcast/Services/JSONVariantParser.swift
+      - path: Clipmunk/Models/PostVariant.swift
+      - path: Clipmunk/Models/VideoJob.swift
+      - path: Clipmunk/Models/String+Trimmed.swift
+      - path: Clipmunk/Services/MediaExtractor.swift
+      - path: Clipmunk/Services/PromptBuilder.swift
+      - path: Clipmunk/Services/JSONVariantParser.swift
     dependencies:
       - package: Gemma4Swift
         product: Gemma4Swift
     settings:
       base:
-        PRODUCT_NAME: shortcast-probe
+        PRODUCT_NAME: clipmunk-probe
         SWIFT_VERSION: "6.0"
         MACOSX_DEPLOYMENT_TARGET: "15.0"
         GENERATE_INFOPLIST_FILE: YES

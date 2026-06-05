@@ -1,6 +1,6 @@
 <div align="center">
 
-# Shortcast
+# Clipmunk
 
 **Long videos → ready-to-post shorts for TikTok, Instagram Reels and YouTube Shorts.**
 **Found, cut, captioned, reframed and scheduled — fully on your Mac. Open-source.**
@@ -14,7 +14,7 @@
 
 <br />
 
-<img src="assets/demo.gif" alt="Shortcast demo — drop a long video, get cut, captioned, vertical shorts" width="720" />
+<img src="assets/demo.gif" alt="Clipmunk demo — drop a long video, get cut, captioned, vertical shorts" width="720" />
 
 <br />
 
@@ -26,11 +26,11 @@
 
 ## What it does
 
-Shortcast has two modes:
+Clipmunk has two modes:
 
 ### 🎬 Make shorts from a long video (the main one)
 
-Drop a podcast, talk, stream or any long recording. Shortcast transcribes it on-device,
+Drop a podcast, talk, stream or any long recording. Clipmunk transcribes it on-device,
 finds the **best 3–6 viral moments**, cuts each one, and writes the **full post copy for
 all three platforms** — all in one pass. Horizontal (16:9) footage is **reframed to
 vertical 9:16**, tracking the speaker's face. You get a grid of finished shorts you can
@@ -38,11 +38,11 @@ play with sound, edit, download, publish, or **schedule one-per-day across the w
 
 ### ✏️ Caption a short
 
-Already have a short vertical clip? Drop it and Shortcast **watches the frames and hears
+Already have a short vertical clip? Drop it and Clipmunk **watches the frames and hears
 the audio** (Gemma 4 E4B, multimodal) and writes the three platform captions directly,
 rendered as editable phone-style previews.
 
-What's different about Shortcast:
+What's different about Clipmunk:
 
 - 🛰️ **Nothing leaves your Mac during processing.** No cloud model, no upload.
   Your video is only sent to a network when you choose to publish it.
@@ -125,23 +125,32 @@ the captions:
 
 The model downloads once on first use. Everything runs offline afterwards.
 
+## Requirements
+
+- **Apple Silicon** Mac (M1 or later), **macOS 15+**.
+- **Memory:** **16 GB RAM minimum**, **24 GB+ recommended** — at 24 GB+ Clipmunk keeps both
+  the Director and the copywriter model resident; below that it loads them sequentially.
+- **Disk:** ~**12–14 GB free** for the on-device models downloaded on first run
+  (Gemma 4 12B ≈ 7 GB, Gemma 4 E4B ≈ 5 GB, WhisperKit large-v3 ≈ 1.5 GB), plus working
+  space for the videos you process. Models download once from Hugging Face, then run offline.
+
 ## Install
 
 > Releases are unsigned (not yet notarized), so macOS Gatekeeper blocks them the
 > first time. This is expected — one Terminal command fixes it.
 
-1. Download `Shortcast.dmg` from the [latest release](../../releases/latest).
-2. Open the DMG and drag **Shortcast** to your Applications folder.
+1. Download `Clipmunk.dmg` from the [latest release](../../releases/latest).
+2. Open the DMG and drag **Clipmunk** to your Applications folder.
 3. Strip the download-quarantine flag, then open the app normally:
 
    ```bash
-   xattr -dr com.apple.quarantine /Applications/Shortcast.app
+   xattr -dr com.apple.quarantine /Applications/Clipmunk.app
    ```
 
-   Now double-click Shortcast and it launches.
+   Now double-click Clipmunk and it launches.
 
 > [!NOTE]
-> **Seeing “Shortcast.app is damaged and can’t be opened”?** That's the same
+> **Seeing “Clipmunk.app is damaged and can’t be opened”?** That's the same
 > Gatekeeper quarantine — on Apple Silicon, recent macOS shows *“damaged”*
 > instead of *“unidentified developer”* and hides the **Open Anyway** button. The
 > app is **not** actually damaged; the `xattr` command above is the fix.
@@ -149,14 +158,14 @@ The model downloads once on first use. Everything runs offline afterwards.
 <details>
 <summary>Prefer the GUI? (older macOS)</summary>
 
-Double-click Shortcast, then open **System Settings → Privacy & Security**, scroll
-to the message about Shortcast and click **Open Anyway**. On recent macOS this
+Double-click Clipmunk, then open **System Settings → Privacy & Security**, scroll
+to the message about Clipmunk and click **Open Anyway**. On recent macOS this
 button often doesn't appear for unsigned apps — use the Terminal command instead.
 </details>
 
 ### First run
 
-- Shortcast downloads the models it needs on first use, with a visible progress bar:
+- Clipmunk downloads the models it needs on first use, with a visible progress bar:
   the **Director** (Gemma 4 12B ≈ 7 GB, or Qwen 3.5 9B ≈ 5 GB) and **WhisperKit
   large-v3** for transcription. Happens once, then it works offline.
 - Open **Settings** (⌘,) and add your [Upload-Post](https://upload-post.com) **API key**
@@ -173,18 +182,18 @@ On Apple Silicon. macOS 15+.
 
 ```bash
 brew install xcodegen
-git clone https://github.com/mutonby/shortcast
-cd shortcast
+git clone https://github.com/ngoldbla/clips
+cd clips
 xcodegen generate
-open Shortcast.xcodeproj
+open Clipmunk.xcodeproj
 ```
 
-Build and run the **Shortcast** scheme. The `.xcodeproj` is generated from
+Build and run the **Clipmunk** scheme. The `.xcodeproj` is generated from
 `project.yml` and intentionally not committed — `xcodegen` regenerates it.
 
 > CLI builds need `-skipMacroValidation`:
 > ```bash
-> xcodebuild -project Shortcast.xcodeproj -scheme Shortcast \
+> xcodebuild -project Clipmunk.xcodeproj -scheme Clipmunk \
 >   -configuration Debug -skipMacroValidation -destination 'platform=macOS' build
 > ```
 

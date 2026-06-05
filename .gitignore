@@ -8,7 +8,7 @@ DerivedData/
 *.moved-aside
 
 # XcodeGen generates this from project.yml — do not commit
-Shortcast.xcodeproj/
+Clipmunk.xcodeproj/
 
 # Swift Package Manager
 .swiftpm/

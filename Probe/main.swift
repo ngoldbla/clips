@@ -1,17 +1,17 @@
 // Developer probe — NOT shipped in the app.
 //
-// Runs Shortcast's real on-device generation path (MediaExtractor → Gemma4Engine
+// Runs Clipmunk's real on-device generation path (MediaExtractor → Gemma4Engine
 // → JSONVariantParser) on a single video, from the command line, so the
 // pipeline can be verified headlessly without driving the SwiftUI app.
 //
-//   usage: shortcast-probe <video-path> [coach-md-path]
+//   usage: clipmunk-probe <video-path> [coach-md-path]
 
 import Foundation
 import Gemma4Swift
 
 let args = CommandLine.arguments
 let videoPath = args.count > 1 ? args[1] : "build/test-clip.mp4"
-let coachPath = args.count > 2 ? args[2] : "Shortcast/Resources/social-content-coach.md"
+let coachPath = args.count > 2 ? args[2] : "Clipmunk/Resources/social-content-coach.md"
 let videoURL = URL(fileURLWithPath: videoPath)
 
 func note(_ message: String) {
