@@ -28,7 +28,10 @@ struct ShortClipTile: View {
             if let url = clip.clipJob?.url {
                 ClipPlayerSheet(url: url,
                                 reframe: clip.reframeEnabled && clip.isLandscape,
-                                title: clip.candidate.hook)
+                                title: clip.candidate.hook,
+                                captionScript: clip.captionScript,
+                                captionStyle: clip.captionStyle,
+                                showCaptions: clip.captionsEnabled && !clip.captionScript.isEmpty)
             }
         }
     }
@@ -73,6 +76,13 @@ struct ShortClipTile: View {
     private var overlays: some View {
         VStack {
             HStack(alignment: .top) {
+                // Virality score chip.
+                Label("\(Int(clip.candidate.score.rounded()))", systemImage: "flame.fill")
+                    .font(.caption2.weight(.bold))
+                    .padding(.horizontal, 7).padding(.vertical, 3)
+                    .background(Self.scoreColor(clip.candidate.score).opacity(0.9), in: Capsule())
+                    .foregroundStyle(.white)
+                    .help("Virality score (1–10)")
                 // Duration chip.
                 Text("\(Int(clip.candidate.duration.rounded()))s")
                     .font(.caption2.weight(.bold))
@@ -169,6 +179,16 @@ struct ShortClipTile: View {
         return f.string(from: date)
     }
 
+    /// Green ≥8, orange 5–7, grey below — a quick read of how viral the Director
+    /// rated this moment.
+    private static func scoreColor(_ score: Double) -> Color {
+        switch score {
+        case 8...:    .green
+        case 5..<8:   .orange
+        default:      .gray
+        }
+    }
+
     // MARK: - Download
 
     private func runSavePanel() {
@@ -231,9 +251,16 @@ struct ClipPlayerSheet: View {
     /// matches the published/downloaded file (the burned-in hook is export-only).
     var reframe: Bool = false
     var title: String = ""
+    /// The exact caption script that will be burned into the export — replayed
+    /// here as a synced SwiftUI overlay so timing and wording match the file.
+    var captionScript: CaptionScript = CaptionScript(lines: [])
+    var captionStyle: CaptionStyle = .default
+    var showCaptions: Bool = false
     @Environment(\.dismiss) private var dismiss
     @State private var player: AVPlayer?
     @State private var loading = false
+    @State private var currentTime: Double = 0
+    @State private var timeObserver: Any?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -248,6 +275,11 @@ struct ClipPlayerSheet: View {
                 Color.black
                 if let player {
                     VideoPlayer(player: player)
+                    if showCaptions && !captionScript.isEmpty {
+                        CaptionPreviewOverlay(
+                            script: captionScript, style: captionStyle, time: currentTime)
+                            .allowsHitTesting(false)
+                    }
                 } else if loading {
                     ProgressView("Preparing vertical preview…")
                         .controlSize(.large)
@@ -258,21 +290,73 @@ struct ClipPlayerSheet: View {
             .frame(width: 372, height: 660)
         }
         .task { await load() }
-        .onDisappear { player?.pause() }
+        .onDisappear {
+            if let timeObserver { player?.removeTimeObserver(timeObserver) }
+            player?.pause()
+        }
     }
 
     private func load() async {
+        let p: AVPlayer
         if reframe {
             loading = true
             let item = await VerticalReframer.previewItem(clipURL: url, reframe: true)
-            let p = item != nil ? AVPlayer(playerItem: item) : AVPlayer(url: url)
-            p.play()
-            player = p
+            p = item != nil ? AVPlayer(playerItem: item) : AVPlayer(url: url)
             loading = false
         } else {
-            let p = AVPlayer(url: url)
-            p.play()
-            player = p
+            p = AVPlayer(url: url)
+        }
+        // Drive the caption overlay off the player clock (clip-relative seconds).
+        // The observer fires on the main queue, so the mutation is main-actor-safe.
+        let interval = CMTime(seconds: 0.05, preferredTimescale: 600)
+        timeObserver = p.addPeriodicTimeObserver(forInterval: interval, queue: .main) { t in
+            MainActor.assumeIsolated { currentTime = CMTimeGetSeconds(t) }
+        }
+        p.play()
+        player = p
+    }
+}
+
+/// Replays a `CaptionScript` as a synced SwiftUI overlay for the live preview.
+/// Approximates the burned-in look (timing + wording are exact; outline/box are
+/// simplified) — the exported file is authoritative.
+private struct CaptionPreviewOverlay: View {
+    let script: CaptionScript
+    let style: CaptionStyle
+    let time: Double
+
+    var body: some View {
+        GeometryReader { geo in
+            if let line = script.lines.first(where: { time >= $0.start && time < $0.end }) {
+                let fontSize = geo.size.width * style.sizeRatio
+                let activeIndex = line.words.lastIndex { time >= $0.start } ?? -1
+                VStack {
+                    if style.position == .center { Spacer() }
+                    HStack(spacing: fontSize * 0.18) {
+                        ForEach(Array(line.words.enumerated()), id: \.offset) { i, word in
+                            let active = i == activeIndex
+                            Text(style.display(word.text))
+                                .font(.system(size: fontSize, weight: .heavy))
+                                .foregroundStyle(active ? Color(hex: style.highlightTextColorHex) : Color(hex: style.textColorHex))
+                                .padding(.horizontal, active && style.highlight == .box ? fontSize * 0.12 : 0)
+                                .background {
+                                    if active && style.highlight == .box {
+                                        RoundedRectangle(cornerRadius: fontSize * 0.16)
+                                            .fill(Color(hex: style.highlightFillHex))
+                                    }
+                                }
+                                .scaleEffect(active ? style.activeScale : 1)
+                                .shadow(color: .black.opacity(0.6), radius: 1, y: 1)
+                        }
+                    }
+                    .padding(.horizontal, geo.size.width * 0.04)
+                    if style.position == .bottom { Spacer().frame(height: geo.size.height * 0.16) }
+                    if style.position == .center { Spacer() }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity,
+                       alignment: style.position == .center ? .center : .bottom)
+                .animation(.easeOut(duration: 0.08), value: activeIndex)
+            }
         }
     }
 }

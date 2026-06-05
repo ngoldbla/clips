@@ -40,14 +40,23 @@ enum VerticalReframer {
     ///
     /// - `reframe`: convert 16:9 → 9:16 (caller already checked it's landscape).
     /// - `overlayText`: burn this text hook into the first seconds (nil = none).
-    static func process(clipURL: URL, reframe: Bool, overlayText: String?) async throws -> URL? {
+    /// - `captionScript`: animated word-level captions to burn in (nil/empty = none).
+    /// - `captionStyle`: how those captions look.
+    static func process(
+        clipURL: URL, reframe: Bool, overlayText: String?,
+        captionScript: CaptionScript? = nil, captionStyle: CaptionStyle = .default
+    ) async throws -> URL? {
         let hook = overlayText?.trimmingCharacters(in: .whitespacesAndNewlines)
         let wantOverlay = !(hook?.isEmpty ?? true)
+        let captions = (captionScript?.isEmpty == false) ? captionScript : nil
+        let wantCaptions = captions != nil
 
-        // No reframe → keep the existing overlay-only path untouched.
+        // No reframe → overlay/caption-only path.
         guard reframe else {
-            if wantOverlay {
-                return try await VideoOverlayRenderer.render(clipURL: clipURL, text: hook!)
+            if wantOverlay || wantCaptions {
+                return try await VideoOverlayRenderer.render(
+                    clipURL: clipURL, text: wantOverlay ? hook! : "",
+                    captionScript: captions, captionStyle: captionStyle)
             }
             return nil
         }
@@ -74,58 +83,160 @@ enum VerticalReframer {
             return try await renderTracking(
                 asset: asset, videoTrack: videoTrack, duration: duration,
                 transform: transform, keyframes: keyframes,
-                overlayText: wantOverlay ? hook! : nil)
+                overlayText: wantOverlay ? hook! : nil,
+                captionScript: captions, captionStyle: captionStyle)
         } else {
             let reframed = try await renderBlurred(asset: asset)
-            guard wantOverlay else { return reframed }
-            // B-roll fallback only: a second pass to add the hook.
-            let withHook = try await VideoOverlayRenderer.render(clipURL: reframed, text: hook!)
+            guard wantOverlay || wantCaptions else { return reframed }
+            // B-roll fallback only: a second pass to add the hook and/or captions.
+            let withOverlay = try await VideoOverlayRenderer.render(
+                clipURL: reframed, text: wantOverlay ? hook! : "",
+                captionScript: captions, captionStyle: captionStyle)
             try? FileManager.default.removeItem(at: reframed)
-            return withHook
+            return withOverlay
         }
     }
 
-    // MARK: - Face sampling (Vision)
+    // MARK: - Face sampling (Vision) + audio-aware active speaker
 
     private struct Sample { let time: Double; let midX: CGFloat? }
+    private struct DetectedFace { let box: CGRect; let mouthOpen: CGFloat }
 
-    /// Detects the largest face every ~0.5 s. `midX` is the face's horizontal
-    /// centre in 0…1 of the oriented frame; nil when no face is found. Runs off
-    /// the main actor (Vision is CPU-heavy) and only takes the URL so no
-    /// non-Sendable AVFoundation object crosses isolation.
+    nonisolated private static let sampleStep = 0.5
+
+    /// Samples faces every ~0.5 s. With multiple people AND audio, it follows the
+    /// ACTIVE speaker — the face whose mouth moves while there's speech — using
+    /// IoU face-tracking and hysteresis so rapid back-and-forth doesn't jitter the
+    /// camera. Single-face or no-audio clips fall back to the largest face, i.e.
+    /// today's behaviour (regression-safe). `midX` is 0…1 of the oriented frame;
+    /// nil when no face is found. Runs off the main actor and only takes the URL,
+    /// so no non-Sendable AVFoundation object crosses isolation.
     nonisolated private static func sampleFaces(clipURL: URL, duration: Double) async -> [Sample] {
-        let asset = AVURLAsset(url: clipURL)
-        let generator = AVAssetImageGenerator(asset: asset)
+        let generator = AVAssetImageGenerator(asset: AVURLAsset(url: clipURL))
         generator.appliesPreferredTrackTransform = true   // upright frames
         generator.requestedTimeToleranceBefore = CMTime(seconds: 0.25, preferredTimescale: 600)
         generator.requestedTimeToleranceAfter = CMTime(seconds: 0.25, preferredTimescale: 600)
         generator.maximumSize = CGSize(width: 512, height: 512)  // plenty for detection
 
-        var samples: [Sample] = []
+        var times: [Double] = []
+        var perFrame: [[DetectedFace]] = []
         var t = 0.0
-        let step = 0.5
-        while t < max(step, duration) {
+        while t < max(sampleStep, duration) {
             let time = CMTime(seconds: t, preferredTimescale: 600)
             if let (cgImage, _) = try? await generator.image(at: time) {
-                samples.append(Sample(time: t, midX: largestFaceMidX(in: cgImage)))
+                perFrame.append(facesWithMouth(in: cgImage))
             } else {
-                samples.append(Sample(time: t, midX: nil))
+                perFrame.append([])
             }
-            t += step
+            times.append(t)
+            t += sampleStep
+        }
+
+        // Single-/no-face clips: exactly today's "largest face" behaviour.
+        let maxFaces = perFrame.map(\.count).max() ?? 0
+        if maxFaces <= 1 {
+            return zip(times, perFrame).map { time, faces in
+                Sample(time: time, midX: faces.max { areaOf($0.box) < areaOf($1.box) }?.box.midX)
+            }
+        }
+
+        let envelope = await AudioActivityAnalyzer.envelope(clipURL: clipURL, cadence: sampleStep)
+        return activeSpeakerSamples(times: times, perFrame: perFrame, envelope: envelope)
+    }
+
+    nonisolated private static func areaOf(_ r: CGRect) -> CGFloat { r.width * r.height }
+
+    /// All faces in a frame, each with a mouth-openness proxy (vertical lip span
+    /// in face-relative space) from Vision landmarks — native, no MediaPipe.
+    nonisolated private static func facesWithMouth(in cgImage: CGImage) -> [DetectedFace] {
+        let request = VNDetectFaceLandmarksRequest()
+        let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+        guard (try? handler.perform([request])) != nil,
+              let faces = request.results else { return [] }
+        return faces.map { DetectedFace(box: $0.boundingBox, mouthOpen: mouthOpenness($0)) }
+    }
+
+    /// Vertical extent of the outer lips in the face's own bounding-box space
+    /// (≈ how open the mouth is); 0 when no lip landmarks are available.
+    nonisolated private static func mouthOpenness(_ face: VNFaceObservation) -> CGFloat {
+        guard let lips = face.landmarks?.outerLips, lips.pointCount > 0 else { return 0 }
+        let ys = lips.normalizedPoints.map(\.y)
+        guard let lo = ys.min(), let hi = ys.max() else { return 0 }
+        return hi - lo
+    }
+
+    /// One face followed across frames.
+    private struct Track { var box: CGRect; var mouth: CGFloat; var lastFrame: Int }
+
+    /// Links faces across frames by bounding-box IoU, scores each as a speaker
+    /// (size × centering × speech-weighted mouth movement), and picks the active
+    /// speaker per frame with hysteresis. Returns the chosen face's `midX`.
+    nonisolated private static func activeSpeakerSamples(
+        times: [Double], perFrame: [[DetectedFace]], envelope: [AudioActivityAnalyzer.Activity]
+    ) -> [Sample] {
+        var tracks: [Int: Track] = [:]
+        var nextID = 0
+        var currentSpeaker: Int?
+        var samples: [Sample] = []
+        let switchMargin: CGFloat = 0.25      // a challenger must beat the incumbent by 25%
+        let referenceMouth: CGFloat = 0.12    // a typical "open mouth" lip span
+
+        for (i, faces) in perFrame.enumerated() {
+            // 1. Link this frame's faces to recently-seen tracks by IoU.
+            var present: [(id: Int, face: DetectedFace)] = []
+            var used = Set<Int>()
+            for face in faces {
+                let candidate = tracks
+                    .filter { !used.contains($0.key) && i - $0.value.lastFrame <= 4 }
+                    .max { iou($0.value.box, face.box) < iou($1.value.box, face.box) }
+                if let candidate, iou(candidate.value.box, face.box) > 0.3 {
+                    used.insert(candidate.key)
+                    tracks[candidate.key] = Track(
+                        box: face.box,
+                        mouth: candidate.value.mouth * 0.5 + face.mouthOpen * 0.5,
+                        lastFrame: i)
+                    present.append((candidate.key, face))
+                } else {
+                    let id = nextID; nextID += 1
+                    tracks[id] = Track(box: face.box, mouth: face.mouthOpen, lastFrame: i)
+                    present.append((id, face))
+                }
+            }
+            guard !present.isEmpty else { samples.append(Sample(time: times[i], midX: nil)); continue }
+
+            // 2. Score each present face as a speaker. A talking mouth during
+            //    audio-active moments is the strongest signal.
+            let speaking = CGFloat(AudioActivityAnalyzer.speaking(at: times[i], in: envelope))
+            let scored = present.map { entry -> (id: Int, midX: CGFloat, s: CGFloat) in
+                let area = areaOf(entry.face.box)
+                let centering = 1 - abs(entry.face.box.midX - 0.5)            // 0.5…1
+                let mouth = min(1.5, (tracks[entry.id]?.mouth ?? entry.face.mouthOpen) / referenceMouth)
+                let speech = 1 + speaking * 1.5 * mouth
+                return (entry.id, entry.face.box.midX, area * (0.6 + 0.4 * centering) * speech)
+            }
+            let best = scored.max { $0.s < $1.s }!
+
+            // 3. Hysteresis: switch only when a challenger clearly wins AND someone
+            //    is actually speaking — otherwise hold (no chasing during silence).
+            if let inc = currentSpeaker.flatMap({ id in scored.first { $0.id == id } }) {
+                let challengerWins = best.id != inc.id && best.s > inc.s * (1 + switchMargin) && speaking > 0.25
+                currentSpeaker = challengerWins ? best.id : inc.id
+            } else {
+                currentSpeaker = best.id
+            }
+            let chosen = scored.first { $0.id == currentSpeaker } ?? best
+            samples.append(Sample(time: times[i], midX: chosen.midX))
         }
         return samples
     }
 
-    nonisolated private static func largestFaceMidX(in cgImage: CGImage) -> CGFloat? {
-        let request = VNDetectFaceRectanglesRequest()
-        let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
-        guard (try? handler.perform([request])) != nil,
-              let faces = request.results, !faces.isEmpty else { return nil }
-        // Largest face by area wins (the speaker, not background extras).
-        let biggest = faces.max { a, b in
-            (a.boundingBox.width * a.boundingBox.height) < (b.boundingBox.width * b.boundingBox.height)
-        }
-        return biggest?.boundingBox.midX
+    /// Intersection-over-union of two normalized boxes.
+    nonisolated private static func iou(_ a: CGRect, _ b: CGRect) -> CGFloat {
+        let inter = a.intersection(b)
+        guard !inter.isNull else { return 0 }
+        let interArea = inter.width * inter.height
+        let union = areaOf(a) + areaOf(b) - interArea
+        return union > 0 ? interArea / union : 0
     }
 
     // MARK: - Pan path (the "virtual camera")
@@ -233,28 +344,39 @@ enum VerticalReframer {
         return (composition, videoComposition)
     }
 
-    /// Export path: tracking reframe + optional burned-in hook, one pass.
+    /// Export path: tracking reframe + optional burned-in captions + hook, one pass.
     private static func renderTracking(
         asset: AVAsset, videoTrack: AVAssetTrack, duration: CMTime,
         transform base: CGAffineTransform, keyframes: [Keyframe],
-        overlayText: String?
+        overlayText: String?,
+        captionScript: CaptionScript? = nil, captionStyle: CaptionStyle = .default
     ) async throws -> URL {
         let (composition, videoComposition) = try await buildTracking(
             asset: asset, videoTrack: videoTrack, duration: duration,
             transform: base, keyframes: keyframes)
 
-        if let overlayText {
-            let renderSize = videoComposition.renderSize
+        let renderSize = videoComposition.renderSize
+        let total = CMTimeGetSeconds(duration)
+        let captionLayer = captionScript.flatMap {
+            CaptionRenderer.layer(for: $0, renderSize: renderSize, style: captionStyle, total: total)
+        }
+
+        if overlayText != nil || captionLayer != nil {
             let parentLayer = CALayer()
             let videoLayer = CALayer()
             parentLayer.frame = CGRect(origin: .zero, size: renderSize)
             videoLayer.frame = parentLayer.frame
             parentLayer.addSublayer(videoLayer)
 
-            let band = VideoOverlayRenderer.makeHookBand(text: overlayText, renderSize: renderSize)
-            VideoOverlayRenderer.addOpacityAnimation(
-                to: band, total: CMTimeGetSeconds(duration), hold: 3)
-            parentLayer.addSublayer(band)
+            // Captions sit under the hook band (the band is top-of-frame, captions
+            // are low/centre — they don't overlap).
+            if let captionLayer { parentLayer.addSublayer(captionLayer) }
+
+            if let overlayText {
+                let band = VideoOverlayRenderer.makeHookBand(text: overlayText, renderSize: renderSize)
+                VideoOverlayRenderer.addOpacityAnimation(to: band, total: total, hold: 3)
+                parentLayer.addSublayer(band)
+            }
 
             videoComposition.animationTool = AVVideoCompositionCoreAnimationTool(
                 postProcessingAsVideoLayer: videoLayer, in: parentLayer)

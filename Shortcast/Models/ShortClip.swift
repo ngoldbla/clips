@@ -13,6 +13,11 @@ final class ShortClip: Identifiable {
     /// What's actually said in this clip's range — grounds the captioning.
     let transcriptSlice: String
 
+    /// Animated word-level captions for this clip, built ONCE here from the
+    /// clip's word stamps so the live preview and the exported/published file
+    /// render from the exact same script (they can never drift).
+    let captionScript: CaptionScript
+
     /// The cut clip (url + duration); nil until cutting finishes.
     var clipJob: VideoJob?
     /// The three platform posts, edited in place by the card.
@@ -41,6 +46,11 @@ final class ShortClip: Identifiable {
     /// gates both the reframe and the per-clip toggle's visibility.
     var isLandscape = false
 
+    /// Per-clip switch for burning animated word-level captions.
+    var captionsEnabled: Bool
+    /// Per-clip caption look.
+    var captionStyle: CaptionStyle
+
     // Per-clip publish state.
     private(set) var isPublishing = false
     private(set) var publishReport: UploadPostClient.PublishReport?
@@ -49,14 +59,54 @@ final class ShortClip: Identifiable {
     private(set) var scheduledDate: Date?
 
     init(candidate: ClipCandidate, transcriptSlice: String,
-         overlayEnabled: Bool, reframeEnabled: Bool) {
+         wordStamps: [WordStamp] = [],
+         overlayEnabled: Bool, reframeEnabled: Bool,
+         captionsEnabled: Bool = true, captionStyle: CaptionStyle = .default) {
         self.candidate = candidate
         self.transcriptSlice = transcriptSlice
+        // Build the caption script once, in source→clip-relative time, from the
+        // words spoken in this clip's range.
+        self.captionScript = CaptionScript.build(
+            words: wordStamps, clipStart: candidate.start, clipEnd: candidate.end)
         // Prefer the model's short overlay hook; fall back to the caption hook.
         let raw = candidate.overlay.isEmpty ? candidate.hook : candidate.overlay
         self.overlayText = String(raw.prefix(60))
         self.overlayEnabled = overlayEnabled
         self.reframeEnabled = reframeEnabled
+        self.captionsEnabled = captionsEnabled
+        self.captionStyle = captionStyle
+    }
+
+    /// Rebuilds a clip from a persisted library entry, pointing at the copied cut
+    /// video. The caption script and toggles come straight from the manifest, so
+    /// a reopened job renders identically to when it was made.
+    init(restoring stored: StoredClip, clipURL: URL) {
+        self.candidate = stored.candidate
+        self.transcriptSlice = stored.transcriptSlice
+        self.captionScript = stored.captionScript
+        self.overlayText = stored.overlayText
+        self.overlayEnabled = stored.overlayEnabled
+        self.reframeEnabled = stored.reframeEnabled
+        self.captionsEnabled = stored.captionsEnabled
+        self.captionStyle = CaptionStyle.preset(id: stored.captionStyleID)
+        self.isLandscape = stored.isLandscape
+        self.variants = stored.variants
+        self.detectedLanguage = stored.detectedLanguage
+        self.clipJob = VideoJob(url: clipURL, durationSeconds: stored.durationSeconds)
+        self.stage = .ready
+    }
+
+    /// A persistable snapshot of this clip for the job library. `clipFile` keys
+    /// the copied cut video inside the job bundle.
+    func stored() -> StoredClip {
+        StoredClip(
+            candidate: candidate, transcriptSlice: transcriptSlice,
+            captionScript: captionScript, variants: variants,
+            detectedLanguage: detectedLanguage, overlayText: overlayText,
+            overlayEnabled: overlayEnabled, reframeEnabled: reframeEnabled,
+            isLandscape: isLandscape, captionsEnabled: captionsEnabled,
+            captionStyleID: captionStyle.id, clipFile: "\(id.uuidString).mp4",
+            durationSeconds: clipJob?.durationSeconds ?? candidate.duration)
     }
 
     var isReadyToPublish: Bool {
@@ -69,7 +119,8 @@ final class ShortClip: Identifiable {
     var isRendered: Bool {
         let wantReframe = reframeEnabled && isLandscape
         let wantOverlay = overlayEnabled && !overlayText.trimmed.isEmpty
-        return wantReframe || wantOverlay
+        let wantCaptions = captionsEnabled && !captionScript.isEmpty
+        return wantReframe || wantOverlay || wantCaptions
     }
 
     /// Builds the file to upload or download: applies the vertical reframe and/or
@@ -80,11 +131,14 @@ final class ShortClip: Identifiable {
         let hook = overlayText.trimmed
         let wantReframe = reframeEnabled && isLandscape
         let wantOverlay = overlayEnabled && !hook.isEmpty
-        if wantReframe || wantOverlay,
+        let wantCaptions = captionsEnabled && !captionScript.isEmpty
+        if wantReframe || wantOverlay || wantCaptions,
            let url = try await VerticalReframer.process(
                 clipURL: clipJob.url,
                 reframe: wantReframe,
-                overlayText: wantOverlay ? hook : nil) {
+                overlayText: wantOverlay ? hook : nil,
+                captionScript: wantCaptions ? captionScript : nil,
+                captionStyle: captionStyle) {
             return (url, true)
         }
         return (clipJob.url, false)

@@ -2,8 +2,9 @@ import Foundation
 
 /// One viral moment the Director (Qwen 3.5 9B) picked out of a long video's
 /// transcript: a time range plus why it works and a suggested on-screen hook.
-struct ClipCandidate: Sendable, Identifiable, Equatable {
-    let id = UUID()
+/// `Codable` so finished jobs persist to the local library (Phase 3).
+struct ClipCandidate: Sendable, Identifiable, Equatable, Codable {
+    var id = UUID()
     /// Start offset in seconds.
     var start: Double
     /// End offset in seconds.
@@ -14,6 +15,11 @@ struct ClipCandidate: Sendable, Identifiable, Equatable {
     var hook: String
     /// Short on-screen text hook (a few words) for the burned-in overlay.
     var overlay: String = ""
+
+    /// Virality score the Director assigns, 1–10 (hook strength, emotional peak,
+    /// payoff/completeness). Drives dedup + ranking. Defaults to a neutral 5 when
+    /// the model omits it, so un-scored clips aren't unfairly sunk.
+    var score: Double = 5
 
     /// The 3-platform caption package, when the Director writes it inline in the
     /// same pass (Qwen copywriter). Empty when captions are produced separately

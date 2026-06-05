@@ -4,15 +4,22 @@ import Observation
 @preconcurrency import WhisperKit
 
 /// One spoken segment with its time range, in seconds.
-struct TranscriptSegment: Sendable, Equatable {
+///
+/// `words` carries per-word timing when it's available (WhisperKit with
+/// `wordTimestamps` on); it's empty for cue-level sources (`.srt`/`.vtt`
+/// sidecars, fetched CC), which synthesize their stamps on demand in
+/// `Transcript.wordStamps(start:end:)`. `Codable` so finished jobs can persist
+/// their transcript in the local library (Phase 3).
+struct TranscriptSegment: Sendable, Equatable, Codable {
     let start: Double
     let end: Double
     let text: String
+    var words: [WordStamp] = []
 }
 
 /// A full transcript with timestamps. Fed to the Director to pick moments, and
 /// sliced per clip to ground each caption in what's actually said there.
-struct Transcript: Sendable, Equatable {
+struct Transcript: Sendable, Equatable, Codable {
     let segments: [TranscriptSegment]
     let language: String?
 
@@ -43,6 +50,50 @@ struct Transcript: Sendable, Equatable {
             .filter { $0.end > start && $0.start < end }
             .map { $0.text.trimmed }
             .joined(separator: " ")
+    }
+
+    /// Per-word stamps (in SOURCE-video seconds) for words overlapping
+    /// `[start, end]` — the input to animated word-level captions.
+    ///
+    /// Uses Whisper's real per-word timing when a segment has it; otherwise
+    /// synthesizes stamps by spreading a cue's `[start, end]` across its words in
+    /// proportion to each word's length, so cue-level sources (`.srt`/`.vtt`,
+    /// fetched CC) still drive word-by-word captions. The caller rebases these to
+    /// clip-relative time in `CaptionScript.build`.
+    func wordStamps(start: Double, end: Double) -> [WordStamp] {
+        var out: [WordStamp] = []
+        for seg in segments where seg.end > start && seg.start < end {
+            let segWords = seg.words.isEmpty
+                ? Self.synthesizeWords(text: seg.text, start: seg.start, end: seg.end)
+                : seg.words
+            out.append(contentsOf: segWords.filter { $0.end > start && $0.start < end })
+        }
+        return out
+    }
+
+    /// Distributes `[start, end]` across the words in `text` proportionally to
+    /// each word's character count. Every word gets a floor weight of 1 so short
+    /// words and punctuation-only tokens still receive a slice; the last word is
+    /// pinned to `end` so rounding can't leave a gap. A zero-length cue yields
+    /// zero-length stamps (harmless — they just don't display).
+    static func synthesizeWords(text: String, start: Double, end: Double) -> [WordStamp] {
+        let tokens = text.split(whereSeparator: { $0 == " " || $0 == "\n" || $0 == "\t" })
+            .map(String.init)
+            .filter { !$0.isEmpty }
+        guard !tokens.isEmpty else { return [] }
+        let span = max(end - start, 0)
+        let weights = tokens.map { Double(max(1, $0.count)) }
+        let totalWeight = weights.reduce(0, +)
+        guard totalWeight > 0 else { return [] }
+
+        var cursor = start
+        var result: [WordStamp] = []
+        for (i, token) in tokens.enumerated() {
+            let wEnd = (i == tokens.count - 1) ? end : cursor + span * (weights[i] / totalWeight)
+            result.append(WordStamp(text: token, start: cursor, end: max(wEnd, cursor)))
+            cursor = wEnd
+        }
+        return result
     }
 
     private static func mmss(_ seconds: Double) -> String {
@@ -151,6 +202,10 @@ final class TranscriptionService {
         // makes WhisperKit pick the spoken language instead of defaulting to en.
         var options = DecodingOptions()
         options.task = .transcribe
+        // Ask Whisper for per-word timing so captions can highlight the spoken
+        // word. Only this on-device path pays the (small) extra cost; cue-level
+        // sources synthesize their stamps instead.
+        options.wordTimestamps = true
         if let code = Self.languageCode(from: languageHint) {
             options.language = code
             options.detectLanguage = false
@@ -159,8 +214,17 @@ final class TranscriptionService {
             options.detectLanguage = true
         }
         let results = try await whisper.transcribe(audioPath: audioURL.path, decodeOptions: options)
-        let segments = results.flatMap(\.segments).map {
-            TranscriptSegment(start: Double($0.start), end: Double($0.end), text: $0.text)
+        let segments = results.flatMap(\.segments).map { seg in
+            TranscriptSegment(
+                start: Double(seg.start),
+                end: Double(seg.end),
+                text: seg.text,
+                // WhisperKit's `word` carries a leading space — trim it; drop any
+                // empties so the caption stream is clean.
+                words: (seg.words ?? []).compactMap { w in
+                    let t = w.word.trimmingCharacters(in: .whitespacesAndNewlines)
+                    return t.isEmpty ? nil : WordStamp(text: t, start: Double(w.start), end: Double(w.end))
+                })
         }
         guard !segments.isEmpty else { throw TranscriptionError.empty }
         Self.log("transcribed \(segments.count) segments, language=\(results.first?.language ?? "?")")

@@ -14,6 +14,8 @@ struct ShortcastApp: App {
                 .environment(modelManager)
                 .environment(workspace)
                 .task {
+                    // Ask once for permission to notify when long jobs finish.
+                    workspace.requestNotificationAuthorization()
                     // Kick off the first-run download / model load.
                     await modelManager.prepareIfNeeded()
                 }

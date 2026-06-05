@@ -9,6 +9,7 @@ struct ContentView: View {
     @Environment(WorkspaceModel.self) private var workspace
 
     @State private var isDropTargeted = false
+    @State private var showingHistory = false
 
     var body: some View {
         ZStack {
@@ -24,19 +25,38 @@ struct ContentView: View {
         .animation(.smooth(duration: 0.32), value: workspace.phase)
         .frame(minWidth: 1000, minHeight: 720)
         .dropDestination(for: URL.self) { urls, _ in
-            guard modelManager.isReady,
-                  !workspace.isBusy,
-                  let url = urls.first(where: { $0.isFileURL })
-            else { return false }
-            startProcessing(url)
-            return true
+            guard modelManager.isReady else { return false }
+            let files = urls.filter { $0.isFileURL }
+            if !files.isEmpty {
+                // Enqueue every dropped video — the queue drains them serially.
+                workspace.enqueue(urls: files, modelManager: modelManager, settings: settings)
+                return true
+            }
+            // A dragged web link → ingest if it's a YouTube URL and the feature's on.
+            if settings.youTubeIngestEnabled,
+               let link = urls.first(where: { YouTubeIngest.looksLikeYouTube($0.absoluteString) }) {
+                workspace.enqueueYouTube(link: link.absoluteString, modelManager: modelManager, settings: settings)
+                return true
+            }
+            return false
         } isTargeted: { isDropTargeted = $0 }
         .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    workspace.refreshLibrary()
+                    showingHistory = true
+                } label: {
+                    Label("History", systemImage: "clock.arrow.circlepath")
+                }
+            }
             ToolbarItem(placement: .primaryAction) {
                 SettingsLink {
                     Label("Settings", systemImage: "gearshape")
                 }
             }
+        }
+        .sheet(isPresented: $showingHistory) {
+            HistoryView()
         }
     }
 

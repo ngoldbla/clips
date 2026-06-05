@@ -18,6 +18,7 @@ struct ShortClipCard: View {
                 failed(message)
             case .ready:
                 if clip.isLandscape { reframeEditor }
+                captionEditor
                 overlayEditor
                 previews
                 footer
@@ -95,6 +96,43 @@ struct ShortClipCard: View {
         }
         .padding(10)
         .background(.quinary, in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var captionEditor: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Toggle(isOn: $clip.captionsEnabled) {
+                Label("Animated word captions", systemImage: "captions.bubble")
+                    .font(.callout)
+            }
+            .toggleStyle(.switch)
+
+            if clip.captionsEnabled {
+                if clip.captionScript.isEmpty {
+                    Text("No spoken words detected in this clip's range — nothing to caption.")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                } else {
+                    Picker("Style", selection: captionStyleBinding) {
+                        ForEach(CaptionStyle.presets) { preset in
+                            Text(preset.name).tag(preset.id)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    Text("Word-by-word captions, burned in when you publish or download. Preview them in “Play with sound”.")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        }
+        .padding(10)
+        .background(.quinary, in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var captionStyleBinding: Binding<String> {
+        Binding(
+            get: { clip.captionStyle.id },
+            set: { clip.captionStyle = CaptionStyle.preset(id: $0) })
     }
 
     private var overlayEditor: some View {

@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import UserNotifications
 
 /// Drives the main window's state machine. Two flows share it:
 ///  - short video → one set of editable variants → publish (the original path).
@@ -70,8 +71,18 @@ final class WorkspaceModel {
     /// The generated shorts (long-video flow).
     var clips: [ShortClip] = []
 
+    /// The batch queue: every dropped video lands here and is drained serially.
+    var queue: [QueuedJob] = []
+
+    /// Finished jobs persisted on disk (the History view), newest first.
+    private(set) var library: [StoredJob] = []
+
     /// Owns transcription (sidecar `.srt`/`.vtt` or on-device WhisperKit).
     let transcription = TranscriptionService()
+
+    init() {
+        library = JobLibrary.list()
+    }
 
     /// Non-fatal banner shown on the drop screen.
     var errorMessage: String?
@@ -96,35 +107,90 @@ final class WorkspaceModel {
 
     // MARK: - Entry
 
-    /// Validates a dropped file and routes to the right flow based on length.
+    /// Enqueues a single dropped video (kept for the existing single-drop call site).
     func process(url: URL, modelManager: ModelManager, settings: AppSettings) async {
-        errorMessage = nil
-        publishReport = nil
-        publishError = nil
-        pipelineError = nil
+        enqueue(urls: [url], modelManager: modelManager, settings: settings)
+    }
 
-        let newJob: VideoJob
-        do {
-            newJob = try await MediaExtractor.makeJob(from: url)
-        } catch {
-            errorMessage = error.localizedDescription
+    /// Enqueues every dropped video and starts draining if the queue was idle.
+    func enqueue(urls: [URL], modelManager: ModelManager, settings: AppSettings) {
+        guard !urls.isEmpty else { return }
+        let mode = inputMode
+        queue.append(contentsOf: urls.map { QueuedJob(url: $0, mode: mode) })
+        startDrainingIfIdle(modelManager: modelManager, settings: settings)
+    }
+
+    /// Enqueues a YouTube link for the shorts flow. The drainer downloads the
+    /// video (opt-in yt-dlp) and fetches its captions. Validates the link first.
+    func enqueueYouTube(link: String, modelManager: ModelManager, settings: AppSettings) {
+        guard let id = YouTubeIngest.videoID(from: link),
+              let watch = URL(string: YouTubeIngest.watchURLString(id: id)) else {
+            errorMessage = "That doesn't look like a YouTube link."
             return
         }
+        queue.append(QueuedJob(url: watch, mode: .shorts, youTubeID: id))
+        startDrainingIfIdle(modelManager: modelManager, settings: settings)
+    }
 
-        switch inputMode {
-        case .caption:
-            await processSingleVideo(job: newJob, modelManager: modelManager, settings: settings)
-        case .shorts:
-            startShortsPipeline(job: newJob, modelManager: modelManager, settings: settings)
+    private func startDrainingIfIdle(modelManager: ModelManager, settings: AppSettings) {
+        if pipelineTask == nil {
+            pipelineTask = Task { await drainQueue(modelManager: modelManager, settings: settings) }
+        }
+    }
+
+    /// Processes queued jobs one at a time (the MLX engine is single-instance, so
+    /// serial is correct). Each finished shorts job is saved to the local library
+    /// and a notification posted; a failure marks that job and moves on.
+    private func drainQueue(modelManager: ModelManager, settings: AppSettings) async {
+        defer { pipelineTask = nil }
+        while let job = queue.first(where: { $0.status == .pending }) {
+            if Task.isCancelled { return }
+            job.status = .processing
+            errorMessage = nil; publishReport = nil; publishError = nil; pipelineError = nil
+            do {
+                // YouTube job: download the video (opt-in yt-dlp) and try to fetch
+                // its captions first, so we can skip Whisper when they exist.
+                let videoURL: URL
+                var prefetched: Transcript?
+                if let id = job.youTubeID {
+                    guard YtDlpManager.isAvailable else { throw WorkspaceError.ytDlpMissing }
+                    phase = .transcribing
+                    videoURL = try await YtDlpManager.downloadVideo(from: job.url.absoluteString)
+                    prefetched = try? await YouTubeIngest.fetchTranscript(
+                        videoID: id, languageHint: settings.languageOverride)
+                } else {
+                    videoURL = job.url
+                }
+                let removeSource = job.youTubeID != nil
+                defer { if removeSource { try? FileManager.default.removeItem(at: videoURL) } }
+
+                let videoJob = try await MediaExtractor.makeJob(from: videoURL)
+                switch job.mode {
+                case .caption:
+                    try await processSingleVideo(job: videoJob, modelManager: modelManager, settings: settings)
+                case .shorts:
+                    try await runShortsPipeline(
+                        job: videoJob, modelManager: modelManager, settings: settings,
+                        prefetchedTranscript: prefetched)
+                    persistFinishedShortsJob(source: videoJob)
+                }
+                job.status = .finished
+                notify(title: "Shorts ready", body: "\(job.fileName) — \(clips.count) clip(s) ready.")
+            } catch is CancellationError {
+                job.status = .failed("Cancelled")
+                return
+            } catch {
+                job.status = .failed(error.localizedDescription)
+                notify(title: "Job failed", body: "\(job.fileName): \(error.localizedDescription)")
+            }
         }
     }
 
     // MARK: - Single-video flow (unchanged behaviour)
 
-    private func processSingleVideo(job newJob: VideoJob, modelManager: ModelManager, settings: AppSettings) async {
+    private func processSingleVideo(job newJob: VideoJob, modelManager: ModelManager, settings: AppSettings) async throws {
         guard let engine = modelManager.engine else {
-            errorMessage = "The model is still getting ready — give it a moment, then drop the video again."
-            return
+            throw WorkspaceError.modelNotReady
         }
 
         job = newJob
@@ -145,12 +211,14 @@ final class WorkspaceModel {
             errorMessage = "Couldn't generate posts for that video. \(error.localizedDescription)"
             job = nil
             phase = .empty
+            throw error
         }
     }
 
     // MARK: - Shorts flow
 
-    private func startShortsPipeline(job newJob: VideoJob, modelManager: ModelManager, settings: AppSettings) {
+    private func runShortsPipeline(job newJob: VideoJob, modelManager: ModelManager, settings: AppSettings,
+                                   prefetchedTranscript: Transcript? = nil) async throws {
         cleanupClipTempFiles()
         job = newJob
         clips = []
@@ -158,20 +226,21 @@ final class WorkspaceModel {
         pipelineError = nil
         phase = .transcribing
 
-        pipelineTask = Task {
-            await self.runShortsPipeline(job: newJob, modelManager: modelManager, settings: settings)
-        }
-    }
-
-    private func runShortsPipeline(job: VideoJob, modelManager: ModelManager, settings: AppSettings) async {
         let pipelineStart = Date()
         Self.log("pipeline start — copywriter=\(settings.copywriterModel.rawValue)")
         do {
-            // 1. Transcript: sidecar .srt/.vtt if present, else WhisperKit.
+            // 1. Transcript: a pre-fetched one (YouTube CC) wins; else a sidecar
+            //    .srt/.vtt; else on-device WhisperKit.
             phase = .transcribing
             let t0 = Date()
-            let transcript = try await transcription.transcript(
-                for: job.url, languageHint: settings.languageOverride)
+            let transcript: Transcript
+            if let prefetchedTranscript {
+                transcript = prefetchedTranscript
+                Self.log("transcript: \(prefetchedTranscript.segments.count) pre-fetched cue(s) (YouTube CC) — Whisper skipped")
+            } else {
+                transcript = try await transcription.transcript(
+                    for: newJob.url, languageHint: settings.languageOverride)
+            }
             // Trust the language of the actual text over Whisper's 30s auto-detect.
             let captionLanguage = transcript.contentLanguage ?? transcript.language
             Self.log("transcript ready in \(Self.elapsed(since: t0)) — whisper=\(transcript.language ?? "?"), text=\(captionLanguage ?? "?")")
@@ -194,11 +263,15 @@ final class WorkspaceModel {
             try Task.checkCancellation()
 
             // Seed cards; they fill in as each clip is cut + captioned.
+            let captionStyle = CaptionStyle.preset(id: settings.captionStyleID)
             clips = candidates.map {
                 ShortClip(candidate: $0,
                           transcriptSlice: transcript.slice(start: $0.start, end: $0.end),
+                          wordStamps: transcript.wordStamps(start: $0.start, end: $0.end),
                           overlayEnabled: settings.burnHookOverlay,
-                          reframeEnabled: settings.reframeToVertical)
+                          reframeEnabled: settings.reframeToVertical,
+                          captionsEnabled: settings.burnCaptions,
+                          captionStyle: captionStyle)
             }
             phase = .shortsResults
 
@@ -214,7 +287,7 @@ final class WorkspaceModel {
                     clip.stage = .cutting
                     let tCut = Date()
                     let clipURL = try await MediaExtractor.cutClip(
-                        from: job.url,
+                        from: newJob.url,
                         start: clip.candidate.start,
                         duration: clip.candidate.duration)
                     clip.clipJob = VideoJob(url: clipURL, durationSeconds: clip.candidate.duration)
@@ -251,12 +324,14 @@ final class WorkspaceModel {
             clips = []
             self.job = nil
             phase = .empty
+            throw CancellationError()
         } catch {
             pipelineError = error.localizedDescription
             errorMessage = "Couldn't make shorts from that video. \(error.localizedDescription)"
             self.job = nil
             clips = []
             phase = .empty
+            throw error
         }
     }
 
@@ -311,6 +386,7 @@ final class WorkspaceModel {
     func startOver() {
         pipelineTask?.cancel()
         cleanupClipTempFiles()
+        queue.removeAll()
         job = nil
         variants = []
         clips = []
@@ -320,6 +396,86 @@ final class WorkspaceModel {
         errorMessage = nil
         pipelineError = nil
         phase = .empty
+    }
+
+    // MARK: - Library (History) + notifications
+
+    /// Saves the just-finished shorts job to the on-device library (manifest +
+    /// copied cut clips). A save failure is logged, never fatal.
+    private func persistFinishedShortsJob(source: VideoJob) {
+        let ready = clips.filter { if case .ready = $0.stage { return true } else { return false } }
+        guard !ready.isEmpty else { return }
+
+        var storedClips: [StoredClip] = []
+        var clipSources: [String: URL] = [:]
+        for clip in ready {
+            let snapshot = clip.stored()
+            storedClips.append(snapshot)
+            if let url = clip.clipJob?.url { clipSources[snapshot.clipFile] = url }
+        }
+        let stored = StoredJob(
+            id: UUID(), sourceFileName: source.fileName, createdAt: Date(),
+            language: ready.first?.detectedLanguage, clips: storedClips)
+        do {
+            try JobLibrary.save(stored, clipSources: clipSources)
+            library.insert(stored, at: 0)
+        } catch {
+            Self.log("library save failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Reloads the persisted job list from disk (e.g. when opening History).
+    func refreshLibrary() { library = JobLibrary.list() }
+
+    /// Deletes a stored job (bundle + manifest) and drops it from History.
+    func deleteLibraryJob(_ id: UUID) {
+        JobLibrary.delete(id)
+        library.removeAll { $0.id == id }
+    }
+
+    /// Reopens a stored job into the results grid for re-preview / re-download /
+    /// re-publish. Skips clips whose copied video has gone missing.
+    func reopen(_ stored: StoredJob) {
+        pipelineTask?.cancel()
+        cleanupClipTempFiles()
+        queue.removeAll()
+        clips = stored.clips.compactMap { sc in
+            guard let url = try? JobLibrary.videoURL(jobID: stored.id, clipFile: sc.clipFile),
+                  FileManager.default.fileExists(atPath: url.path) else { return nil }
+            return ShortClip(restoring: sc, clipURL: url)
+        }
+        job = VideoJob(url: URL(fileURLWithPath: stored.sourceFileName), durationSeconds: 0)
+        detectedLanguage = stored.language
+        pipelineError = nil
+        errorMessage = nil
+        phase = .shortsResults
+    }
+
+    /// Requests permission to post local notifications (called once at launch).
+    func requestNotificationAuthorization() {
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+    }
+
+    /// Posts a local notification now (no-op if the user declined authorization).
+    private func notify(title: String, body: String) {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        UNUserNotificationCenter.current().add(
+            UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
+    }
+
+    enum WorkspaceError: LocalizedError {
+        case modelNotReady
+        case ytDlpMissing
+        var errorDescription: String? {
+            switch self {
+            case .modelNotReady:
+                "The model is still getting ready — give it a moment, then drop the video again."
+            case .ytDlpMissing:
+                "Downloading a YouTube video needs yt-dlp. Install it from the link field, then try again."
+            }
+        }
     }
 
     private func cleanupClipTempFiles() {
