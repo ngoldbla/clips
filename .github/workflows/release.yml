@@ -114,8 +114,8 @@ jobs:
           name: Clipmunk-dmg
           path: dist/Clipmunk.dmg
 
-      - name: Attach DMG to the Release (tags only)
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Attach DMG to the Release (final vX.Y.Z tags only, not -rc)
+        if: startsWith(github.ref, 'refs/tags/') && !contains(github.ref_name, '-')
         uses: softprops/action-gh-release@v2
         with:
           files: dist/Clipmunk.dmg
