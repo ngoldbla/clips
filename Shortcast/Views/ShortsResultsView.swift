@@ -14,6 +14,9 @@ struct ShortsResultsView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
+            if workspace.queue.count > 1 {
+                queueStrip
+            }
             Divider()
 
             ScrollView {
@@ -78,6 +81,42 @@ struct ShortsResultsView: View {
             .foregroundStyle(.secondary)
             .padding(.horizontal, 8).padding(.vertical, 3)
             .background(.quaternary, in: Capsule())
+    }
+
+    // MARK: - Batch queue strip
+
+    private var queueStrip: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "rectangle.stack.badge.play")
+                .foregroundStyle(.secondary)
+            Text("Queue").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(workspace.queue) { job in
+                        queueChip(job)
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 22).padding(.vertical, 8)
+        .background(.quaternary.opacity(0.25))
+    }
+
+    @ViewBuilder
+    private func queueChip(_ job: QueuedJob) -> some View {
+        HStack(spacing: 5) {
+            switch job.status {
+            case .pending:    Image(systemName: "clock").foregroundStyle(.secondary)
+            case .processing: ProgressView().controlSize(.mini)
+            case .finished:   Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+            case .failed:     Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+            }
+            Text(job.fileName).lineLimit(1).truncationMode(.middle)
+        }
+        .font(.caption2)
+        .padding(.horizontal, 8).padding(.vertical, 4)
+        .background(.background.secondary, in: Capsule())
+        .frame(maxWidth: 180)
     }
 
     // MARK: - Footer

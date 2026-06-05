@@ -8,9 +8,14 @@ import QuartzCore
 /// clips whose overlay is enabled.
 enum VideoOverlayRenderer {
 
-    /// Renders `clipURL` with `text` shown for `holdSeconds` (then a short fade).
-    /// Returns a new temp `.mp4`. Throws `MediaExtractorError.clipExportFailed`.
-    static func render(clipURL: URL, text: String, holdSeconds: Double = 3) async throws -> URL {
+    /// Renders `clipURL` with an optional `text` hook (shown for `holdSeconds`,
+    /// then a short fade) and/or animated word-level `captionScript`, burned in a
+    /// single pass. Returns a new temp `.mp4`. Throws
+    /// `MediaExtractorError.clipExportFailed`.
+    static func render(
+        clipURL: URL, text: String, holdSeconds: Double = 3,
+        captionScript: CaptionScript? = nil, captionStyle: CaptionStyle = .default
+    ) async throws -> URL {
         let asset = AVURLAsset(url: clipURL)
         guard let videoTrack = try await asset.loadTracks(withMediaType: .video).first else {
             throw MediaExtractorError.noVideoTrack
@@ -48,18 +53,26 @@ enum VideoOverlayRenderer {
         instruction.layerInstructions = [layerInstruction]
         videoComposition.instructions = [instruction]
 
-        // Core Animation layer tree: video + the hook band on top.
+        // Core Animation layer tree: video + optional captions + optional hook band.
         let parentLayer = CALayer()
         let videoLayer = CALayer()
         parentLayer.frame = CGRect(origin: .zero, size: renderSize)
         videoLayer.frame = parentLayer.frame
         parentLayer.addSublayer(videoLayer)
 
-        let band = makeHookBand(text: text, renderSize: renderSize)
-        addOpacityAnimation(to: band,
-                            total: CMTimeGetSeconds(duration),
-                            hold: holdSeconds)
-        parentLayer.addSublayer(band)
+        let total = CMTimeGetSeconds(duration)
+        if let captionScript,
+           let captionLayer = CaptionRenderer.layer(
+               for: captionScript, renderSize: renderSize, style: captionStyle, total: total) {
+            parentLayer.addSublayer(captionLayer)
+        }
+
+        let hook = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !hook.isEmpty {
+            let band = makeHookBand(text: hook, renderSize: renderSize)
+            addOpacityAnimation(to: band, total: total, hold: holdSeconds)
+            parentLayer.addSublayer(band)
+        }
 
         videoComposition.animationTool = AVVideoCompositionCoreAnimationTool(
             postProcessingAsVideoLayer: videoLayer, in: parentLayer)

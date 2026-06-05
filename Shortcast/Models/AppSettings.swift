@@ -107,6 +107,26 @@ final class AppSettings {
         didSet { defaults.set(reframeToVertical, forKey: Keys.reframe) }
     }
 
+    /// Default for burning animated word-level captions into each generated
+    /// short. Per-clip toggles can override this.
+    var burnCaptions: Bool {
+        didSet { defaults.set(burnCaptions, forKey: Keys.burnCaptions) }
+    }
+
+    /// Which caption look to use, by `CaptionStyle` preset id (e.g. "bold-white",
+    /// "hormozi", "pop", "clean").
+    var captionStyleID: String {
+        didSet { defaults.set(captionStyleID, forKey: Keys.captionStyle) }
+    }
+
+    /// Opt-in: allow pasting a YouTube link. Fetches captions directly over the
+    /// network and uses an opt-in `yt-dlp` to download the video. OFF by default
+    /// — it's the only feature that adds outbound traffic during processing, so
+    /// the app keeps its "nothing leaves your Mac" posture unless you enable it.
+    var youTubeIngestEnabled: Bool {
+        didSet { defaults.set(youTubeIngestEnabled, forKey: Keys.youtube) }
+    }
+
     private let defaults: UserDefaults
 
     init(defaults: UserDefaults = .standard) {
@@ -136,6 +156,11 @@ final class AppSettings {
         self.burnHookOverlay = defaults.object(forKey: Keys.burnHook) as? Bool ?? true
         // Default on — horizontal clips should become vertical shorts.
         self.reframeToVertical = defaults.object(forKey: Keys.reframe) as? Bool ?? true
+        // Default on — animated captions are the headline short-form look.
+        self.burnCaptions = defaults.object(forKey: Keys.burnCaptions) as? Bool ?? true
+        self.captionStyleID = defaults.string(forKey: Keys.captionStyle) ?? CaptionStyle.default.id
+        // Off by default — opt-in network feature.
+        self.youTubeIngestEnabled = defaults.object(forKey: Keys.youtube) as? Bool ?? false
     }
 
     /// True once the app has enough to publish.
@@ -160,6 +185,9 @@ final class AppSettings {
         static let copywriter  = "shortcast.copywriterModel"
         static let burnHook    = "shortcast.burnHookOverlay"
         static let reframe     = "shortcast.reframeToVertical"
+        static let burnCaptions = "shortcast.burnCaptions"
+        static let captionStyle = "shortcast.captionStyleID"
+        static let youtube     = "shortcast.youTubeIngestEnabled"
         static let apiKey      = "shortcast.apiKey"
         /// Old Keychain account, read once to migrate into UserDefaults.
         static let legacyApiKey = "upload-post-api-key"

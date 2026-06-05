@@ -226,8 +226,9 @@ final class MomentFinderService {
     - Elige momentos con gancho, payoff, una idea completa o una frase memorable. \
     NADA de cortar a mitad de idea.
     - Devuelve SOLO un JSON válido, sin texto alrededor, con esta forma:
-    {"clips":[{"start":"MM:SS","end":"MM:SS","why":"por qué es viral","hook":"primera frase del clip que para el scroll","overlay":"texto MUY corto (3-6 palabras) para sobreimprimir en pantalla"}]}
+    {"clips":[{"start":"MM:SS","end":"MM:SS","why":"por qué es viral","hook":"primera frase del clip que para el scroll","overlay":"texto MUY corto (3-6 palabras) para sobreimprimir en pantalla","score":8}]}
     - "overlay" es un gancho cortísimo y con punch, en el idioma del vídeo, pensado para verse grande encima del vídeo los primeros segundos.
+    - "score": número del 1 al 10 de qué tan viral es (gancho fuerte, pico emocional, payoff/idea completa). 10 = imprescindible.
     - Entre 3 y 6 clips, ordenados de mejor a peor.
     """
 
@@ -257,6 +258,7 @@ final class MomentFinderService {
         Reglas:
         - Cada clip dura entre 15 y 50 segundos. Una idea completa, nada cortado a medias.
         - Entre 3 y 6 clips, ordenados de mejor a peor.
+        - "score": número del 1 al 10 de qué tan viral es (gancho fuerte, pico emocional, payoff/idea completa). 10 = imprescindible.
         - \(languageRule)
         - Los hashtags van como palabras sueltas, SIN '#', y cada uno único (no repitas).
         - Devuelve SOLO un JSON válido, sin texto alrededor, con esta forma EXACTA:
@@ -266,6 +268,7 @@ final class MomentFinderService {
           "why":"por qué es viral",
           "hook":"primera frase del clip que para el scroll",
           "overlay":"texto MUY corto (3-6 palabras) para sobreimprimir en pantalla",
+          "score":8,
           "captions":{
             "tiktok":{"hook":"primera línea que para el scroll, máx 90 caracteres","description":"caption corta y con punch","hashtags":["tag","tag","tag"]},
             "instagram":{"hook":"primera línea fuerte","description":"2-4 párrafos cortos, storytelling, acaba con llamada a la acción","hashtags":["...20-30 tags mezclando alcance grande y nicho..."]},
@@ -319,7 +322,35 @@ enum MomentJSONParser {
             }
         }
         MomentFinderService.log("parser: \(entries.count) raw clip entries")
-        return entries.compactMap(buildClip)
+        let built = entries.compactMap(buildClip)
+        let ranked = rankAndDedup(built, overlapThreshold: overlapThreshold)
+        MomentFinderService.log("parser: \(built.count) built → \(ranked.count) after dedup/rank")
+        return ranked
+    }
+
+    /// Decision #4 default: two clips count as near-duplicates when their time
+    /// ranges overlap by more than this fraction of the SHORTER clip.
+    static let overlapThreshold = 0.5
+
+    /// Ranks clips best-first by score (tie-break: the longer, more-complete clip
+    /// wins) and greedily drops any clip that overlaps an already-kept,
+    /// higher-ranked sibling past `overlapThreshold` — so the grid never shows two
+    /// cuts of the same moment.
+    static func rankAndDedup(_ clips: [ClipCandidate], overlapThreshold: Double) -> [ClipCandidate] {
+        let sorted = clips.sorted {
+            $0.score != $1.score ? $0.score > $1.score : $0.duration > $1.duration
+        }
+        var kept: [ClipCandidate] = []
+        for clip in sorted where !kept.contains(where: { overlapFraction(clip, $0) > overlapThreshold }) {
+            kept.append(clip)
+        }
+        return kept
+    }
+
+    /// Overlap of two ranges as a fraction of the shorter one's duration (0…1).
+    static func overlapFraction(_ a: ClipCandidate, _ b: ClipCandidate) -> Double {
+        let overlap = max(0, min(a.end, b.end) - max(a.start, b.start))
+        return overlap / max(1, min(a.duration, b.duration))
     }
 
     /// Builds a validated `ClipCandidate` from one raw clip object, or nil if it
@@ -336,6 +367,9 @@ enum MomentJSONParser {
             why: string(entry, "why", "reason", "rationale"),
             hook: string(entry, "hook", "title", "headline"),
             overlay: string(entry, "overlay", "onscreen", "caption"))
+        if let score = scoreValue(entry["score"] ?? entry["rating"] ?? entry["virality"]) {
+            clip.score = score
+        }
 
         // Inline 3-platform caption package. The captions object is keyed by
         // platform, which JSONVariantParser already handles.
@@ -429,6 +463,17 @@ enum MomentJSONParser {
         case 1: return parts[0]
         default: return nil
         }
+    }
+
+    /// Parses a 1–10 score from a number or numeric string, clamped to [1, 10].
+    static func scoreValue(_ value: Any?) -> Double? {
+        let raw: Double?
+        if let n = value as? Double { raw = n }
+        else if let n = value as? Int { raw = Double(n) }
+        else if let s = value as? String {
+            raw = Double(s.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: ",", with: "."))
+        } else { raw = nil }
+        return raw.map { min(10, max(1, $0)) }
     }
 
     private static func string(_ entry: [String: Any], _ keys: String...) -> String {

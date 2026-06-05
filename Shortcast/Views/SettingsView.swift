@@ -103,6 +103,20 @@ struct SettingsView: View {
                 }
             }
 
+            Section("Animated captions") {
+                Toggle("Burn animated word captions into each short", isOn: $settings.burnCaptions)
+                if settings.burnCaptions {
+                    Picker("Style", selection: $settings.captionStyleID) {
+                        ForEach(CaptionStyle.presets) { preset in
+                            Text(preset.name).tag(preset.id)
+                        }
+                    }
+                }
+                Text("Word-by-word captions that highlight each word as it's spoken — the defining short-form look. The default for new shorts; you can flip it or change the style per clip.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Text hook overlay") {
                 Toggle("Burn an AI text hook into each short", isOn: $settings.burnHookOverlay)
                 Text("Shows a short hook over the top of each clip for the first few seconds. The default for new shorts — you can flip it per clip. The text is rendered into the video when you publish.")
@@ -115,6 +129,19 @@ struct SettingsView: View {
                 Text("Tracks the speaker with on-device Vision and reframes 16:9 → 9:16, falling back to a blurred background when there's no clear face. The default for new horizontal clips — you can flip it per clip. Applied when you publish.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+
+            Section("YouTube links (opt-in)") {
+                Toggle("Allow pasting a YouTube link", isOn: $settings.youTubeIngestEnabled)
+                Text("Adds a link field on the drop screen. Shortcast fetches the video's captions over the network (skipping Whisper when they exist) and downloads the video with yt-dlp — an opt-in, checksum-verified tool that's never bundled. This is the only feature that sends traffic off your Mac during processing, so it's off by default.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if settings.youTubeIngestEnabled {
+                    LabeledContent("yt-dlp") {
+                        Text(YtDlpManager.isAvailable ? "Installed" : "Installs on first use")
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
 
             Section("This Mac") {
