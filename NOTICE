@@ -1,3 +1,11 @@
+Clipmunk
+Copyright 2026 The Clipmunk Authors
+
+Clipmunk is a derivative work of the Shortcast project. Files originating from
+Shortcast have been modified by the Clipmunk Authors (renamed, rebranded, and
+extended). The original Shortcast attribution is retained below, as required by
+Section 4 of the Apache License, Version 2.0.
+
 Shortcast
 Copyright 2026 The Shortcast Authors
 
@@ -14,7 +22,7 @@ gemma-4-swift-mlx  (vendored under Vendor/gemma-4-swift-mlx/)
   Licensed under the MIT License — see Vendor/gemma-4-swift-mlx/LICENSE.
   Source: https://github.com/VincentGourbin/gemma-4-swift-mlx
 
-  Shortcast adds one file to this vendored copy that is not part of the
+  Clipmunk adds one file to this vendored copy that is not part of the
   upstream project:
     Vendor/gemma-4-swift-mlx/Sources/Gemma4Swift/Pipeline/Gemma4Engine.swift
   It is also covered by the MIT License above.
@@ -27,6 +35,6 @@ This vendored package depends, in turn, on:
   - swift-mlx-profiler   — MIT  — https://github.com/VincentGourbin/swift-mlx-profiler
 
 The Gemma 4 model weights are downloaded at runtime from Hugging Face
-(mlx-community/gemma-4-e4b-it-4bit) and are NOT distributed with Shortcast.
+(mlx-community/gemma-4-e4b-it-4bit) and are NOT distributed with Clipmunk.
 Gemma is provided by Google under the Gemma Terms of Use:
 https://ai.google.dev/gemma/terms

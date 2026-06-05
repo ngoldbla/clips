@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Developer ID app (not sandboxed). Start with NO hardened-runtime
+	     exceptions; the MLX launch test (plan Task 3) adds the minimum needed,
+	     if any. Empty here = best case (tightest entitlements). -->
+</dict>
+</plist>
