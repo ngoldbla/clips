@@ -230,14 +230,37 @@ final class MomentFinderService {
     - Entre 3 y 6 clips, ordenados de mejor a peor.
     """
 
+    /// A human language name for the model, from a BCP-47 code ("en") or a name
+    /// the user already typed ("English"). Prefers the endonym ("English",
+    /// "español") — the strongest signal to an LLM about which language to write
+    /// in. Returns "" when there's nothing usable (caller then asks the model to
+    /// match the transcript's language).
+    static func languageName(_ value: String?) -> String {
+        let v = (value ?? "").trimmed
+        guard !v.isEmpty else { return "" }
+        // Looks like a code ("en", "es", "pt-BR") → resolve to its endonym.
+        if v.count <= 5, v.allSatisfy({ $0.isLetter || $0 == "-" || $0 == "_" }) {
+            let base = String(v.prefix(2)).lowercased()
+            if let endonym = Locale(identifier: base).localizedString(forLanguageCode: base) {
+                return endonym
+            }
+        }
+        return v
+    }
+
     /// Combined prompt: find the moments AND write each clip's 3-platform caption
     /// package in the same pass (no separate captioning step). Used for the Qwen
     /// copywriter path.
     static func captioningPrompt(language: String?, styleExamples: String) -> String {
-        let lang = (language ?? "").trimmed
-        let languageRule = lang.isEmpty
-            ? "Escribe TODOS los textos (why, hook, overlay y captions) en el mismo idioma que se habla en el vídeo. No traduzcas al inglés."
-            : "Escribe TODOS los textos (why, hook, overlay y captions) en este idioma: \(lang). Úsalo aunque el vídeo esté en otro idioma."
+        // The instructions below are in Spanish (validated that way), so the model
+        // tends to answer in Spanish unless told otherwise emphatically. Name the
+        // target language by its endonym ("English", "español") rather than a bare
+        // code, and explicitly call out the instruction/output language mismatch —
+        // that's what reliably flips a 9B model to the spoken language.
+        let name = Self.languageName(language)
+        let languageRule = name.isEmpty
+            ? "IMPORTANTE — IDIOMA DE SALIDA: detecta el idioma de la TRANSCRIPCIÓN y escribe TODOS los textos (why, hook, overlay, captions y hashtags) EN ESE MISMO IDIOMA. Aunque estas instrucciones estén en español, NO escribas en español salvo que la transcripción esté en español."
+            : "IMPORTANTE — IDIOMA DE SALIDA: escribe TODOS los textos (why, hook, overlay, captions y hashtags) en \(name). Aunque estas instrucciones estén en español, la SALIDA debe estar ÍNTEGRAMENTE en \(name)."
 
         let style = styleExamples.trimmed
         let styleRule = style.isEmpty ? "" : """
@@ -258,7 +281,7 @@ final class MomentFinderService {
         - Entre 3 y 6 clips, ordenados de mejor a peor.
         - "score": número del 1 al 10 de qué tan viral es (gancho fuerte, pico emocional, payoff/idea completa). 10 = imprescindible.
         - \(languageRule)
-        - Los hashtags van como palabras sueltas, SIN '#', y cada uno único (no repitas).
+        - Los hashtags van como strings JSON entre comillas, SIN el símbolo '#' (ej: "productividad", "marketing"), y cada uno único (no repitas).
         - Devuelve SOLO un JSON válido, sin texto alrededor, con esta forma EXACTA:
         {"clips":[{
           "start":"MM:SS",
