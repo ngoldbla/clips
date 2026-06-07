@@ -5,7 +5,29 @@ import SwiftUI
 struct ProcessingView: View {
 
     @Environment(WorkspaceModel.self) private var workspace
+    @Environment(ModelManager.self) private var modelManager
     @State private var pulse = false
+
+    /// While the copywriter loads lazily (16 GB doesn't preload it), reflect the
+    /// download/load state; otherwise the model is running on the clip.
+    private var headline: String {
+        switch modelManager.phase {
+        case .downloading: return "Downloading the captioning model…"
+        case .loading:     return "Preparing the model for your Mac…"
+        default:           return "Watching and listening to your video…"
+        }
+    }
+
+    private var subline: String {
+        switch modelManager.phase {
+        case .downloading(let fraction, _):
+            return "First run only — \(Int(fraction * 100))%. After this, Clipmunk never sends your videos anywhere."
+        case .loading:
+            return "First run only — optimizing for your Mac."
+        default:
+            return "Gemma 4 is running on your Mac. This usually takes 10–30 seconds."
+        }
+    }
 
     var body: some View {
         VStack(spacing: 22) {
@@ -31,7 +53,7 @@ struct ProcessingView: View {
             VStack(spacing: 8) {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
-                    Text("Watching and listening to your video…")
+                    Text(headline)
                         .font(.title3.weight(.semibold))
                 }
 
@@ -41,9 +63,11 @@ struct ProcessingView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                Text("Gemma 4 is running on your Mac. This usually takes 10–30 seconds.")
+                Text(subline)
                     .font(.callout)
                     .foregroundStyle(.tertiary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 460)
 
                 if let job = workspace.job, job.exceedsRecommendedLength {
                     Text("This clip is over 60s — the model hears the first 30s of audio and samples frames across the whole video.")

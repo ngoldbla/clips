@@ -44,16 +44,81 @@ enum JSONVariantParser {
         return nil
     }
 
-    /// Fixes the two glitches that break otherwise-good model JSON: a property
-    /// name that dropped its opening quote (`  foo": …` → `  "foo": …`, a token
-    /// the model sometimes mis-samples) and trailing commas before `}`/`]`.
+    /// Fixes the glitches that break otherwise-good model JSON: a property name
+    /// that dropped its opening quote (`  foo": …` → `  "foo": …`, a token the
+    /// model sometimes mis-samples), unquoted bare-word array elements (the
+    /// hashtag case), and trailing commas before `}`/`]`.
     static func repairDrift(_ json: String) -> String {
         var s = json
         // Key missing its opening quote (after `{`, `,` or a newline).
         s = regexReplace(s, #"([\n\r{,]\s*)([A-Za-z_][A-Za-z0-9_]*)("\s*:)"#, with: "$1\"$2$3")
+        // Unquoted bare words inside arrays, e.g. `[trabajo, productividad]`.
+        s = quoteBareArrayWords(s)
         // Trailing comma before a closing brace/bracket.
         s = regexReplace(s, #",(\s*[}\]])"#, with: "$1")
         return s
+    }
+
+    /// Wraps unquoted bare-word elements inside JSON arrays in quotes, e.g.
+    /// `[trabajo, productividad]` → `["trabajo", "productividad"]`. Models do this
+    /// for hashtag arrays because the prompt asks for bare words (no `#`), which
+    /// makes the whole object invalid JSON and fails the parse.
+    ///
+    /// String-aware (never touches text inside quotes, so prose like
+    /// `"uno, dos, tres"` is safe) and array-aware (only quotes elements whose
+    /// enclosing container is `[`, leaving numbers, objects, nested arrays and
+    /// the JSON literals true/false/null untouched).
+    static func quoteBareArrayWords(_ json: String) -> String {
+        let literals: Set<String> = ["true", "false", "null"]
+        let chars = Array(json)
+        var out = String()
+        out.reserveCapacity(chars.count + 16)
+        var stack: [Character] = []            // nesting of { and [
+        var inString = false
+        var escaped = false
+        var lastSignificant: Character?        // last non-whitespace char emitted outside a string
+
+        var i = 0
+        while i < chars.count {
+            let c = chars[i]
+            if inString {
+                out.append(c)
+                if escaped { escaped = false }
+                else if c == "\\" { escaped = true }
+                else if c == "\"" { inString = false }
+                i += 1
+                continue
+            }
+            switch c {
+            case "\"":
+                inString = true; out.append(c); lastSignificant = c; i += 1
+            case "{", "[":
+                stack.append(c); out.append(c); lastSignificant = c; i += 1
+            case "}", "]":
+                if !stack.isEmpty { stack.removeLast() }
+                out.append(c); lastSignificant = c; i += 1
+            case " ", "\t", "\n", "\r":
+                out.append(c); i += 1          // whitespace doesn't change element boundary
+            default:
+                let inArray = stack.last == "["
+                let atElementStart = lastSignificant == "[" || lastSignificant == ","
+                if inArray, atElementStart, c.isLetter {
+                    var token = ""
+                    while i < chars.count, chars[i].isLetter || chars[i].isNumber || chars[i] == "_" {
+                        token.append(chars[i]); i += 1
+                    }
+                    if literals.contains(token.lowercased()) {
+                        out.append(token)            // a real boolean/null — leave it typed
+                    } else {
+                        out.append("\""); out.append(token); out.append("\"")
+                    }
+                    lastSignificant = "\""
+                } else {
+                    out.append(c); lastSignificant = c; i += 1
+                }
+            }
+        }
+        return out
     }
 
     private static func regexReplace(_ s: String, _ pattern: String, with template: String) -> String {

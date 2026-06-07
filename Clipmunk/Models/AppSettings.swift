@@ -60,6 +60,14 @@ final class AppSettings {
         /// True for the multimodal Gemma E4B path that watches each clip — the
         /// only option that loads a second model alongside the Director.
         var watchesClips: Bool { self == .gemmaE4B }
+
+        /// First-launch default, sized to this Mac's memory. The 12B Director needs
+        /// ~13 GB resident and swaps hard on 16 GB; Qwen 3.5 9B (~6 GB) fits and runs
+        /// the same one-pass inline-caption flow with a huge context window. 24 GB+
+        /// gets the stronger 12B. Only used when the user hasn't picked explicitly.
+        static var ramAdaptiveDefault: CopywriterModel {
+            MemoryPolicy.canKeepBothResident ? .gemma12B : .qwen35_9b
+        }
     }
 
     /// Upload-Post API key. Mirrored to `UserDefaults` on every change.
@@ -148,10 +156,12 @@ final class AppSettings {
         self.styleExamples = defaults.string(forKey: Keys.style) ?? ""
         // Defaults to true on first launch (no stored value yet).
         self.tiktokAsDraft = defaults.object(forKey: Keys.tiktokDraft) as? Bool ?? true
-        // Default to Gemma 4 12B: one text model finds the moments and writes
-        // the captions in the same pass, keeping the spoken language.
+        // One text model finds the moments and writes the captions in the same
+        // pass, keeping the spoken language. The first-launch default is sized to
+        // this Mac's RAM (Qwen 3.5 9B on 16 GB, Gemma 4 12B on 24 GB+); an explicit
+        // pick in Settings always wins.
         self.copywriterModel = defaults.string(forKey: Keys.copywriter)
-            .flatMap(CopywriterModel.init) ?? .gemma12B
+            .flatMap(CopywriterModel.init) ?? CopywriterModel.ramAdaptiveDefault
         // Default on — the user opted into the hook-overlay feature.
         self.burnHookOverlay = defaults.object(forKey: Keys.burnHook) as? Bool ?? true
         // Default on — horizontal clips should become vertical shorts.

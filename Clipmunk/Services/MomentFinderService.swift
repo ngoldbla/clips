@@ -44,10 +44,8 @@ final class MomentFinderService {
 
     var displayName: String { profile.displayName }
 
-    init() {
-        // Cap MLX's Metal buffer cache so long sessions don't balloon RAM.
-        MLX.Memory.cacheLimit = 1024 * 1024 * 1024
-    }
+    // MLX's Metal allocator (buffer-cache + memory limits) is configured centrally
+    // in `MemoryPolicy.configureMLX()` at launch, sized to this Mac's RAM.
 
     // MARK: - Lifecycle
 

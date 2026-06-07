@@ -13,7 +13,7 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            if modelManager.isReady {
+            if modelManager.isLaunchComplete {
                 workspaceContent
                     .transition(.opacity)
             } else {
@@ -21,11 +21,11 @@ struct ContentView: View {
                     .transition(.opacity)
             }
         }
-        .animation(.smooth(duration: 0.32), value: modelManager.isReady)
+        .animation(.smooth(duration: 0.32), value: modelManager.isLaunchComplete)
         .animation(.smooth(duration: 0.32), value: workspace.phase)
         .frame(minWidth: 1000, minHeight: 720)
         .dropDestination(for: URL.self) { urls, _ in
-            guard modelManager.isReady else { return false }
+            guard modelManager.isLaunchComplete else { return false }
             let files = urls.filter { $0.isFileURL }
             if !files.isEmpty {
                 // Enqueue every dropped video — the queue drains them serially.

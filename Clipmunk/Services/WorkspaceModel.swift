@@ -189,14 +189,20 @@ final class WorkspaceModel {
     // MARK: - Single-video flow (unchanged behaviour)
 
     private func processSingleVideo(job newJob: VideoJob, modelManager: ModelManager, settings: AppSettings) async throws {
-        guard let engine = modelManager.engine else {
-            throw WorkspaceError.modelNotReady
-        }
-
         job = newJob
         variants = []
         detectedLanguage = nil
         phase = .processing
+
+        // "Caption a short" always uses the multimodal E4B engine. On 16 GB it
+        // isn't preloaded at launch, so bring it up now (idempotent if already
+        // resident); ProcessingView surfaces the download/load progress.
+        await modelManager.prepareIfNeeded()
+        guard let engine = modelManager.engine else {
+            phase = .empty
+            job = nil
+            throw WorkspaceError.modelNotReady
+        }
 
         do {
             let result = try await GemmaService.generate(
@@ -246,20 +252,36 @@ final class WorkspaceModel {
             Self.log("transcript ready in \(Self.elapsed(since: t0)) — whisper=\(transcript.language ?? "?"), text=\(captionLanguage ?? "?")")
             try Task.checkCancellation()
 
-            // 2. Find the viral moments — one Qwen pass over the full transcript.
+            // On tight RAM, clear the decks before the heavy Director loads:
+            // transcription is done, so free WhisperKit (~2 GB CoreML), and drop any
+            // copywriter engine a prior caption job left resident. The Director then
+            // loads into a clean memory state instead of on top of them.
+            if MemoryPolicy.shouldFreeWhisperAfterTranscribe {
+                transcription.unload()
+            }
+            modelManager.freeCopywriterIfMemoryTight()
+            MemoryPolicy.releaseCaches()
+
+            // Freeze the model choice for the whole run. Reading it once makes the
+            // pipeline's memory plan (which model to load/free/when) immutable, so a
+            // mid-run change in Settings can't strand a stage on a model that was
+            // never loaded.
+            let captioningModel = settings.copywriterModel
+
+            // 2. Find the viral moments — one Director pass over the full transcript.
             phase = .findingMoments
             let t1 = Date()
-            await modelManager.prepareDirector(profile: settings.copywriterModel.directorProfile)
-            Self.log("director ready in \(Self.elapsed(since: t1)) — \(settings.copywriterModel.directorProfile.displayName)")
+            await modelManager.prepareDirector(profile: captioningModel.directorProfile)
+            Self.log("director ready in \(Self.elapsed(since: t1)) — \(captioningModel.directorProfile.displayName)")
             // The two text models write the captions in this same pass.
-            let useInlineCaptions = settings.copywriterModel.usesInlineCaptions
+            let useInlineCaptions = captioningModel.usesInlineCaptions
             let t2 = Date()
             let candidates = try await modelManager.momentFinder.findMoments(
                 transcript: transcript.srtLike(),
                 includeCaptions: useInlineCaptions,
                 language: captionLanguage,
                 styleExamples: settings.styleExamples)
-            Self.log("found \(candidates.count) moment(s) in \(Self.elapsed(since: t2)), captions inline=\(useInlineCaptions)")
+            Self.log("found \(candidates.count) moment(s) in \(Self.elapsed(since: t2)), captions inline=\(useInlineCaptions) — \(MemoryPolicy.snapshot())")
             try Task.checkCancellation()
 
             // Seed cards; they fill in as each clip is cut + captioned.
@@ -275,12 +297,43 @@ final class WorkspaceModel {
             }
             phase = .shortsResults
 
-            // On tight RAM, free the Director before the Gemma E4B clip-watcher.
-            if settings.copywriterModel.watchesClips {
-                modelManager.freeDirectorIfMemoryTight()
+            if useInlineCaptions {
+                // The Director already wrote each clip's caption package in the
+                // moment-finding pass — copy them over. If it occasionally dropped
+                // one (truncation / malformed JSON), back-fill it NOW, while the
+                // Director is still resident, with a per-clip text pass. Doing it
+                // here (not in the cut loop) means we never reload a freed ~6 GB
+                // model mid-pipeline on tight RAM.
+                for (index, clip) in clips.enumerated() {
+                    if !clip.candidate.variants.isEmpty {
+                        clip.variants = clip.candidate.variants
+                        clip.detectedLanguage = captionLanguage
+                    } else if let result = try? await modelManager.momentFinder.caption(
+                        transcriptSlice: clip.transcriptSlice,
+                        hook: clip.candidate.hook,
+                        languageOverride: effectiveLanguage(settings, captionLanguage),
+                        styleExamples: settings.styleExamples) {
+                        clip.variants = result.variants
+                        clip.detectedLanguage = result.detectedLanguage
+                        Self.log("clip \(index + 1)/\(clips.count) caption back-filled (Director dropped it inline)")
+                    } else {
+                        clip.detectedLanguage = captionLanguage
+                    }
+                }
+            }
+
+            // The Director's work is done. On tight RAM, free it now to hand its
+            // memory back before the GPU-heavy cut + Vision reframe loop. The watch
+            // path captions every clip with the separate E4B engine, so load that
+            // lazily (16 GB skips the launch preload) right after.
+            modelManager.freeDirectorIfMemoryTight()
+            if captioningModel.watchesClips {
+                await modelManager.prepareIfNeeded()
             }
 
             // 3+4. Cut, then caption, each clip in turn (one MLX engine → serial).
+            // Inline clips are already captioned above, so the loop never reloads
+            // the Director; only the watch path runs the E4B engine here.
             for (index, clip) in clips.enumerated() {
                 try Task.checkCancellation()
                 do {
@@ -294,18 +347,18 @@ final class WorkspaceModel {
                     // Only horizontal clips get the vertical-reframe option.
                     clip.isLandscape = await VerticalReframer.isLandscape(url: clipURL)
 
-                    if !clip.candidate.variants.isEmpty {
-                        // Captions already came from the Director's one pass.
-                        clip.variants = clip.candidate.variants
-                        clip.detectedLanguage = captionLanguage
+                    if !clip.variants.isEmpty || !captioningModel.watchesClips {
+                        // Inline path: captions are set (or were unrecoverable — ship
+                        // the clip anyway rather than reload a freed model).
                         clip.stage = .ready
                         Self.log("clip \(index + 1)/\(clips.count) ready — cut \(Self.elapsed(since: tCut)), captions inline")
                     } else {
+                        // Watch path: caption this cut clip with the E4B engine.
                         clip.stage = .captioning
                         let tCap = Date()
                         let result = try await captionClip(
-                            clip, modelManager: modelManager, settings: settings,
-                            transcriptLanguage: captionLanguage)
+                            clip, model: captioningModel, modelManager: modelManager,
+                            settings: settings, transcriptLanguage: captionLanguage)
                         clip.variants = result.variants
                         clip.detectedLanguage = result.detectedLanguage
                         clip.stage = .ready
@@ -318,7 +371,8 @@ final class WorkspaceModel {
                     Self.log("clip \(index + 1)/\(clips.count) failed: \(error.localizedDescription)")
                 }
             }
-            Self.log("pipeline done — \(clips.count) clip(s) in \(Self.elapsed(since: pipelineStart)) total")
+            MemoryPolicy.releaseCaches()
+            Self.log("pipeline done — \(clips.count) clip(s) in \(Self.elapsed(since: pipelineStart)) total — \(MemoryPolicy.snapshot())")
         } catch is CancellationError {
             cleanupClipTempFiles()
             clips = []
@@ -335,15 +389,26 @@ final class WorkspaceModel {
         }
     }
 
-    private func captionClip(_ clip: ShortClip, modelManager: ModelManager, settings: AppSettings,
-                             transcriptLanguage: String?) async throws -> GenerationResult {
-        // Lock the output language to what Whisper detected unless the user set a
-        // manual override — small captioners otherwise drift (e.g. Spanish → pt-BR).
-        let effectiveLanguage = settings.languageOverride.trimmed.isEmpty
+    /// The caption output language: the user's manual override if set, else the
+    /// language detected from the transcript text. Small captioners otherwise drift
+    /// (e.g. Spanish → pt-BR), so we lock it.
+    private func effectiveLanguage(_ settings: AppSettings, _ transcriptLanguage: String?) -> String {
+        settings.languageOverride.trimmed.isEmpty
             ? (transcriptLanguage ?? "")
             : settings.languageOverride
+    }
 
-        switch settings.copywriterModel {
+    /// Captions one cut clip with the frozen `model` (never `settings` directly, so
+    /// a mid-run model change can't redirect this to a model that wasn't loaded).
+    /// In practice only the watch path (E4B) reaches here — the inline path
+    /// back-fills its captions while the Director is still resident. The Director
+    /// branch is kept as a defensive fallback.
+    private func captionClip(_ clip: ShortClip, model: AppSettings.CopywriterModel,
+                             modelManager: ModelManager, settings: AppSettings,
+                             transcriptLanguage: String?) async throws -> GenerationResult {
+        let language = effectiveLanguage(settings, transcriptLanguage)
+
+        switch model {
         case .gemmaE4B:
             guard let engine = modelManager.engine, let clipJob = clip.clipJob else {
                 throw MomentFinderError.notReady
@@ -351,16 +416,14 @@ final class WorkspaceModel {
             return try await GemmaService.generate(
                 job: clipJob,
                 engine: engine,
-                languageOverride: effectiveLanguage,
+                languageOverride: language,
                 styleExamples: settings.styleExamples)
         case .gemma12B, .qwen35_9b:
-            // Inline-caption models normally write captions in the moment-finding
-            // pass; this is the fallback per-clip path using the same Director.
-            await modelManager.prepareDirector(profile: settings.copywriterModel.directorProfile)
+            await modelManager.prepareDirector(profile: model.directorProfile)
             return try await modelManager.momentFinder.caption(
                 transcriptSlice: clip.transcriptSlice,
                 hook: clip.candidate.hook,
-                languageOverride: effectiveLanguage,
+                languageOverride: language,
                 styleExamples: settings.styleExamples)
         }
     }
