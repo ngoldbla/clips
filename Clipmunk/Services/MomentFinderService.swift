@@ -165,7 +165,7 @@ final class MomentFinderService {
             // package. 4096 covers the trimmed inline output (~2k tokens for 6
             // clips) with >2x headroom; the repetition penalty stops runaway loops.
             maxTokens: includeCaptions ? 4096 : s.maxTokens,
-            temperature: s.temperature,
+            temperature: Self.effectiveTemperature(s.temperature),
             topP: s.topP,
             topK: s.topK,
             minP: s.minP,
@@ -215,6 +215,15 @@ final class MomentFinderService {
 
     nonisolated static func log(_ message: String) {
         FileHandle.standardError.write(Data("[clipmunk/director] \(message)\n".utf8))
+    }
+
+    /// DEBUG-only decode-temperature override for closed-loop sampling A/B
+    /// (e.g. CLIPMUNK_TEMP=0.5). Returns the profile's temperature otherwise.
+    nonisolated static func effectiveTemperature(_ fallback: Float) -> Float {
+        #if DEBUG
+        if let t = ProcessInfo.processInfo.environment["CLIPMUNK_TEMP"], let v = Float(t) { return v }
+        #endif
+        return fallback
     }
 
     /// DEBUG-only Director-model override for closed-loop A/B of model sizes

@@ -68,6 +68,21 @@ struct ChatModelProfile: Sendable {
             // on the rotating cache threw KVCacheError for no measured memory gain.)
             maxKVSize: 40960, kvBits: 8))
 
+    /// Qwen 3.5 4B — same family/loader as the 9B, but ~3 GB on disk and ~8 GB
+    /// peak (vs the 9B's ~10.7 GB), and ~44% faster prefill. In head-to-head
+    /// judging it matched-or-beat the 9B on hooks, captions, moment selection and
+    /// format compliance — so it's the default on 16 GB Macs: smaller, faster, and
+    /// no quality cost. Same sampling as the 9B (proven to yield valid JSON).
+    static let qwen35_4b = ChatModelProfile(
+        modelID: "mlx-community/Qwen3.5-4B-MLX-4bit",
+        displayName: "Qwen 3.5 4B",
+        factoryKind: .vlm,
+        loader: .vlm,
+        sampling: SamplingConfig(
+            temperature: 0.7, topP: 0.8, topK: 20, minP: 0,
+            repetitionPenalty: nil, maxTokens: 4096,
+            maxKVSize: 40960, kvBits: 8))
+
     /// Gemma 4 12B — Google's new dense 12B (text+vision). We feed it the
     /// transcript text only, so it runs as a text LLM through the same
     /// `ChatSession` path as Qwen, via the vendored Gemma4Swift registration.

@@ -418,7 +418,7 @@ final class WorkspaceModel {
                 engine: engine,
                 languageOverride: language,
                 styleExamples: settings.styleExamples)
-        case .gemma12B, .qwen35_9b:
+        case .qwen35_4b, .qwen35_9b, .gemma12B:
             await modelManager.prepareDirector(profile: model.directorProfile)
             return try await modelManager.momentFinder.caption(
                 transcriptSlice: clip.transcriptSlice,

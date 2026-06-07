@@ -16,33 +16,37 @@ final class AppSettings {
     /// "Director" and write captions inline in the same pass; the third (Gemma 4
     /// E4B) is a multimodal copywriter that watches each clip separately.
     enum CopywriterModel: String, CaseIterable, Identifiable, Sendable {
-        case gemma12B = "gemma12b"
+        case qwen35_4b = "qwen4b"
         case qwen35_9b = "qwen"
+        case gemma12B = "gemma12b"
         case gemmaE4B = "gemma"
 
         var id: String { rawValue }
 
         var displayName: String {
             switch self {
-            case .gemma12B:  "Gemma 4 12B"
+            case .qwen35_4b: "Qwen 3.5 4B"
             case .qwen35_9b: "Qwen 3.5 9B"
+            case .gemma12B:  "Gemma 4 12B"
             case .gemmaE4B:  "Gemma 4 E4B · 4-bit"
             }
         }
 
         var tagline: String {
             switch self {
-            case .gemma12B:  "Finds the moments AND writes all three captions in one pass — strongest writing, one model, keeps the spoken language."
-            case .qwen35_9b: "Finds the moments AND writes all three captions in one pass — lighter, one model, keeps the spoken language."
+            case .qwen35_4b: "Finds the moments AND writes all three captions in one pass — the leanest, fastest fit for 16 GB (~8 GB peak), and matched the bigger models on quality."
+            case .qwen35_9b: "Finds the moments AND writes all three captions in one pass — a step up in size, one model, keeps the spoken language."
+            case .gemma12B:  "Finds the moments AND writes all three captions in one pass — strongest writing, but ~13 GB resident so it swaps on 16 GB."
             case .gemmaE4B:  "Watches each clip (frames + audio) and captions it in a separate pass per clip."
             }
         }
 
-        /// The text model that finds the moments. The two inline options are
+        /// The text model that finds the moments. The three inline options are
         /// their own Director; the clip-watching option still needs a Director,
-        /// for which we use the default (Gemma 4 12B).
+        /// for which we use the strongest text model (Gemma 4 12B).
         var directorProfile: ChatModelProfile {
             switch self {
+            case .qwen35_4b:           .qwen35_4b
             case .qwen35_9b:           .qwen35_9b
             case .gemma12B, .gemmaE4B: .gemma12B
             }
@@ -52,8 +56,8 @@ final class AppSettings {
         /// separate per-clip captioning step runs).
         var usesInlineCaptions: Bool {
             switch self {
-            case .gemma12B, .qwen35_9b: true
-            case .gemmaE4B:             false
+            case .qwen35_4b, .qwen35_9b, .gemma12B: true
+            case .gemmaE4B:                         false
             }
         }
 
@@ -62,11 +66,12 @@ final class AppSettings {
         var watchesClips: Bool { self == .gemmaE4B }
 
         /// First-launch default, sized to this Mac's memory. The 12B Director needs
-        /// ~13 GB resident and swaps hard on 16 GB; Qwen 3.5 9B (~6 GB) fits and runs
-        /// the same one-pass inline-caption flow with a huge context window. 24 GB+
-        /// gets the stronger 12B. Only used when the user hasn't picked explicitly.
+        /// ~13 GB resident and swaps hard on 16 GB; Qwen 3.5 4B (~8 GB peak) fits with
+        /// room to spare, prefills ~44% faster, and matched-or-beat the larger models
+        /// in head-to-head quality judging — so it's the 16 GB default. 24 GB+ gets
+        /// the stronger 12B. Only used when the user hasn't picked explicitly.
         static var ramAdaptiveDefault: CopywriterModel {
-            MemoryPolicy.canKeepBothResident ? .gemma12B : .qwen35_9b
+            MemoryPolicy.canKeepBothResident ? .gemma12B : .qwen35_4b
         }
     }
 
