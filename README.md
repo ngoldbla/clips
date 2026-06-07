@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="assets/clipmunk-mascot.png" alt="Clipmunk logo — a chipmunk cutting a strip of film with scissors" width="200" />
+
 # Clipmunk
 
 **Long videos → ready-to-post shorts for TikTok, Instagram Reels and YouTube Shorts.**
@@ -11,10 +13,6 @@
 ![Swift 6](https://img.shields.io/badge/Swift-6.0-F05138?logo=swift&logoColor=white)
 ![Model](https://img.shields.io/badge/Gemma_4_12B-on--device-4285F4)
 ![Whisper](https://img.shields.io/badge/WhisperKit-large--v3-00B8D9)
-
-<br />
-
-<img src="assets/demo.gif" alt="Clipmunk demo — drop a long video, get cut, captioned, vertical shorts" width="720" />
 
 <br />
 
@@ -136,32 +134,12 @@ The model downloads once on first use. Everything runs offline afterwards.
 
 ## Install
 
-> Releases are unsigned (not yet notarized), so macOS Gatekeeper blocks them the
-> first time. This is expected — one Terminal command fixes it.
-
 1. Download `Clipmunk.dmg` from the [latest release](../../releases/latest).
 2. Open the DMG and drag **Clipmunk** to your Applications folder.
-3. Strip the download-quarantine flag, then open the app normally:
+3. Double-click **Clipmunk** to launch.
 
-   ```bash
-   xattr -dr com.apple.quarantine /Applications/Clipmunk.app
-   ```
-
-   Now double-click Clipmunk and it launches.
-
-> [!NOTE]
-> **Seeing “Clipmunk.app is damaged and can’t be opened”?** That's the same
-> Gatekeeper quarantine — on Apple Silicon, recent macOS shows *“damaged”*
-> instead of *“unidentified developer”* and hides the **Open Anyway** button. The
-> app is **not** actually damaged; the `xattr` command above is the fix.
-
-<details>
-<summary>Prefer the GUI? (older macOS)</summary>
-
-Double-click Clipmunk, then open **System Settings → Privacy & Security**, scroll
-to the message about Clipmunk and click **Open Anyway**. On recent macOS this
-button often doesn't appear for unsigned apps — use the Terminal command instead.
-</details>
+The DMG is signed with an Apple Developer ID certificate and notarized by Apple,
+so it opens normally — no Gatekeeper warnings and no Terminal workaround needed.
 
 ### First run
 
@@ -199,13 +177,19 @@ Build and run the **Clipmunk** scheme. The `.xcodeproj` is generated from
 
 ### Release DMG
 
-`.github/workflows/release.yml` builds an unsigned `.dmg` and attaches it to the
-GitHub Release whenever a `v*` tag is pushed:
+`.github/workflows/release.yml` builds a Developer ID-signed, notarized and
+stapled `Clipmunk.dmg` and publishes it to the GitHub Release whenever a `v*`
+tag is pushed:
 
 ```bash
 git tag v0.1.0
 git push origin v0.1.0
 ```
+
+Pre-release tags (e.g. `v0.1.0-rc1`) publish as GitHub **pre-releases**; final
+`vX.Y.Z` tags publish as full releases. Signing and notarization require the
+`DEVID_CERT_P12_BASE64`, `DEVID_CERT_PASSWORD`, `APPLE_TEAM_ID`, `NOTARY_KEY_P8`,
+`NOTARY_KEY_ID` and `NOTARY_ISSUER_ID` repository secrets.
 
 ## The stack
 
@@ -239,8 +223,6 @@ sent to Upload-Post over HTTPS when you publish. It is never written into the re
 - The **Director** runs a large model on-device. On an M1 Pro, a ~2-minute video takes a
   few minutes end-to-end (transcription + generation). Faster Macs (M3/M4) are quicker.
 - *Caption a short* uses Gemma 4 E4B, whose audio encoder hears the **first 30 seconds**.
-- The app is **unsigned** (see *Install*). Code signing + notarization will come once the
-  project stabilises.
 - One video at a time — no history, no batch processing. By design, for now.
 - Upload-Post free tier limits monthly uploads. One publish to three networks counts as
   three.

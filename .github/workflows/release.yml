@@ -114,12 +114,16 @@ jobs:
           name: Clipmunk-dmg
           path: dist/Clipmunk.dmg
 
-      - name: Attach DMG to the Release (final vX.Y.Z tags only, not -rc)
-        if: startsWith(github.ref, 'refs/tags/') && !contains(github.ref_name, '-')
+      - name: Publish the signed DMG as a GitHub Release
+        # Every v* tag publishes a Release with the notarized DMG attached.
+        # Pre-release (-rc/-beta/…) tags are marked as prereleases; final vX.Y.Z tags are full releases.
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: dist/Clipmunk.dmg
           fail_on_unmatched_files: true
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
 
       - name: Clean up keychain
         if: always()
