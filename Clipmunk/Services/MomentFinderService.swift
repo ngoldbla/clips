@@ -44,10 +44,8 @@ final class MomentFinderService {
 
     var displayName: String { profile.displayName }
 
-    init() {
-        // Cap MLX's Metal buffer cache so long sessions don't balloon RAM.
-        MLX.Memory.cacheLimit = 1024 * 1024 * 1024
-    }
+    // MLX's Metal allocator (buffer-cache + memory limits) is configured centrally
+    // in `MemoryPolicy.configureMLX()` at launch, sized to this Mac's RAM.
 
     // MARK: - Lifecycle
 
@@ -68,7 +66,7 @@ final class MomentFinderService {
         do {
             let downloader = #hubDownloader()
             let localDir = try await downloader.download(
-                id: profile.modelID,
+                id: Self.effectiveModelID(profile.modelID),
                 revision: nil,
                 matching: ["*.safetensors", "*.json", "*.txt", "*.jinja"],
                 useLatest: false,
@@ -100,9 +98,37 @@ final class MomentFinderService {
             phase = .ready
             Self.log("director loaded: \(profile.displayName) (\(profile.modelID))")
         } catch {
-            Self.log("director load FAILED for \(profile.modelID): \(error)")
-            phase = .failed(error.localizedDescription)
+            let id = Self.effectiveModelID(profile.modelID)
+            if Self.isCorruptDownload(error) {
+                // A half-finished / truncated weights file. Purge it so a retry
+                // re-downloads cleanly instead of failing on the same broken file,
+                // and show a clear message rather than the raw MLX error.
+                Self.purgeModelCache(id)
+                Self.log("director load FAILED (incomplete/corrupt download) for \(id) — cache purged: \(error)")
+                phase = .failed("That model's download was incomplete or corrupted — it's been cleared. Tap Retry to download it again.")
+            } else {
+                Self.log("director load FAILED for \(id): \(error)")
+                phase = .failed(error.localizedDescription)
+            }
         }
+    }
+
+    /// True when a model-load error looks like a truncated/corrupt weights file (a
+    /// download that didn't finish) rather than, say, an out-of-memory error — the
+    /// signature is a malformed safetensors header.
+    nonisolated static func isCorruptDownload(_ error: Error) -> Bool {
+        let s = "\(error)".lowercased()
+        return s.contains("invalid json header") || s.contains("header length")
+            || s.contains("safetensors") || s.contains("unexpected end")
+    }
+
+    /// Removes a model's HuggingFace hub cache directory so the next attempt
+    /// re-downloads it from scratch instead of choking on the same broken file.
+    nonisolated static func purgeModelCache(_ modelID: String) {
+        let dir = "models--" + modelID.replacingOccurrences(of: "/", with: "--")
+        let base = ProcessInfo.processInfo.environment["HF_HOME"].map { URL(fileURLWithPath: $0) }
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".cache/huggingface")
+        try? FileManager.default.removeItem(at: base.appendingPathComponent("hub").appendingPathComponent(dir))
     }
 
     /// Frees the loaded model and its Metal cache. Used by ModelManager to make
@@ -136,14 +162,17 @@ final class MomentFinderService {
         var params = GenerateParameters(
             // Captions per clip need much more room than bare moments — a long
             // video can yield 5-6 clips, each with three platforms' caption
-            // package (Instagram alone wants 20-30 hashtags). 6144 covers that;
-            // the repetition penalty stops runaway loops from filling it.
-            maxTokens: includeCaptions ? 6144 : s.maxTokens,
-            temperature: s.temperature,
+            // package. 4096 covers the trimmed inline output (~2k tokens for 6
+            // clips) with >2x headroom; the repetition penalty stops runaway loops.
+            maxTokens: includeCaptions ? 4096 : s.maxTokens,
+            temperature: Self.effectiveTemperature(s.temperature),
             topP: s.topP,
             topK: s.topK,
             minP: s.minP,
             repetitionPenalty: s.repetitionPenalty)
+        // Bounded, 8-bit KV cache: fits a long transcript in memory and is the
+        // proven-reliable config. (4-bit + quantizedKVStart on a rotating cache
+        // threw KVCacheError intermittently for no measured memory win.)
         params.maxKVSize = s.maxKVSize
         params.kvBits = s.kvBits
 
@@ -156,13 +185,26 @@ final class MomentFinderService {
             generateParameters: params,
             additionalContext: ["enable_thinking": false])
 
-        let userPrompt = "Transcripción del vídeo (con timestamps):\n\n\(transcript)\n\nDevuelve el JSON de clips."
+        let userPrompt = "Video transcript (with timestamps):\n\n\(transcript)\n\nReturn the clips JSON."
 
         Self.log("findMoments: transcript \(transcript.count) chars, captions=\(includeCaptions)")
         var raw = ""
+        // Split prefill (time to first token, ~fixed by transcript length) from
+        // generation (scales with output) and log tok/s — a clip-count-independent
+        // speed signal for the optimization loop. Token count approximated as
+        // chars/4 (good enough for run-to-run comparison).
+        let genStart = Date()
+        var firstTokenAt: Date?
         for try await chunk in session.streamResponse(to: userPrompt) {
+            if firstTokenAt == nil { firstTokenAt = Date() }
             raw += chunk
         }
+        let end = Date()
+        let prefillS = (firstTokenAt ?? end).timeIntervalSince(genStart)
+        let genS = max(0.001, end.timeIntervalSince(firstTokenAt ?? genStart))
+        let tokS = (Double(raw.count) / 4.0) / genS
+        Self.log(String(format: "findMoments timing: prefill %.1fs, gen %.1fs, ~%.0f tok/s, %d chars",
+                        prefillS, genS, tokS, raw.count))
         Self.log("findMoments raw output (\(raw.count) chars):\n\(raw)")
 
         let clips = MomentJSONParser.parse(raw)
@@ -173,6 +215,28 @@ final class MomentFinderService {
 
     nonisolated static func log(_ message: String) {
         FileHandle.standardError.write(Data("[clipmunk/director] \(message)\n".utf8))
+    }
+
+    /// DEBUG-only decode-temperature override for closed-loop sampling A/B
+    /// (e.g. CLIPMUNK_TEMP=0.5). Returns the profile's temperature otherwise.
+    nonisolated static func effectiveTemperature(_ fallback: Float) -> Float {
+        #if DEBUG
+        if let t = ProcessInfo.processInfo.environment["CLIPMUNK_TEMP"], let v = Float(t) { return v }
+        #endif
+        return fallback
+    }
+
+    /// DEBUG-only Director-model override for closed-loop A/B of model sizes
+    /// (e.g. CLIPMUNK_DIRECTOR_MODEL=mlx-community/Qwen3.5-4B-MLX-4bit). Returns the
+    /// profile's model in Release and when unset. Same Qwen VLM loader path applies.
+    nonisolated static func effectiveModelID(_ fallback: String) -> String {
+        #if DEBUG
+        if let o = ProcessInfo.processInfo.environment["CLIPMUNK_DIRECTOR_MODEL"], !o.isEmpty {
+            log("director model overridden via env → \(o)")
+            return o
+        }
+        #endif
+        return fallback
     }
 
     /// Captions one clip from its transcript slice (the text-only Copywriter
@@ -214,68 +278,89 @@ final class MomentFinderService {
 
     // MARK: - Prompt
 
-    /// The validated Spanish moment-finder prompt (proven on a real 17-min .srt).
+    /// Moment-finder prompt (moments only, no captions — the clip-watcher path).
     static let systemPrompt = """
-    Eres un editor experto en contenido short-form viral (TikTok, Reels, \
-    YouTube Shorts). Te doy la transcripción de un vídeo largo, con timestamps. \
-    Tu trabajo: encontrar los MEJORES momentos para cortar en clips verticales \
-    que funcionen solos y enganchen en los 2 primeros segundos.
+    You are an expert short-form video editor (TikTok, Reels, YouTube Shorts). I \
+    give you the transcript of a long video, with timestamps. Your job: find the \
+    BEST moments to cut into vertical clips that stand on their own and hook in the \
+    first 2 seconds.
 
-    Reglas:
-    - Cada clip dura entre 15 y 50 segundos.
-    - Elige momentos con gancho, payoff, una idea completa o una frase memorable. \
-    NADA de cortar a mitad de idea.
-    - Devuelve SOLO un JSON válido, sin texto alrededor, con esta forma:
-    {"clips":[{"start":"MM:SS","end":"MM:SS","why":"por qué es viral","hook":"primera frase del clip que para el scroll","overlay":"texto MUY corto (3-6 palabras) para sobreimprimir en pantalla","score":8}]}
-    - "overlay" es un gancho cortísimo y con punch, en el idioma del vídeo, pensado para verse grande encima del vídeo los primeros segundos.
-    - "score": número del 1 al 10 de qué tan viral es (gancho fuerte, pico emocional, payoff/idea completa). 10 = imprescindible.
-    - Entre 3 y 6 clips, ordenados de mejor a peor.
+    Rules:
+    - Each clip is 15 to 50 seconds.
+    - Pick moments with a hook, a payoff, a complete idea or a memorable line. \
+    NEVER cut mid-thought.
+    - Return ONLY valid JSON, no text around it, in this shape:
+    {"clips":[{"start":"MM:SS","end":"MM:SS","why":"why it's viral","hook":"the clip's first line that stops the scroll","overlay":"VERY short text (3-6 words) to superimpose on screen","score":8}]}
+    - "overlay" is a very short, punchy hook in the video's language, meant to show large over the video for the first few seconds.
+    - "score": integer 1-10 of how viral it is (strong hook, emotional peak, payoff/complete idea). 10 = essential.
+    - Between 3 and 6 clips, ranked best to worst.
     """
+
+    /// A human language name for the model, from a BCP-47 code ("en") or a name
+    /// the user already typed ("English"). Prefers the endonym ("English",
+    /// "español") — the strongest signal to an LLM about which language to write
+    /// in. Returns "" when there's nothing usable (caller then asks the model to
+    /// match the transcript's language).
+    static func languageName(_ value: String?) -> String {
+        let v = (value ?? "").trimmed
+        guard !v.isEmpty else { return "" }
+        // Looks like a code ("en", "es", "pt-BR") → resolve to its endonym.
+        if v.count <= 5, v.allSatisfy({ $0.isLetter || $0 == "-" || $0 == "_" }) {
+            let base = String(v.prefix(2)).lowercased()
+            if let endonym = Locale(identifier: base).localizedString(forLanguageCode: base) {
+                return endonym
+            }
+        }
+        return v
+    }
 
     /// Combined prompt: find the moments AND write each clip's 3-platform caption
     /// package in the same pass (no separate captioning step). Used for the Qwen
     /// copywriter path.
     static func captioningPrompt(language: String?, styleExamples: String) -> String {
-        let lang = (language ?? "").trimmed
-        let languageRule = lang.isEmpty
-            ? "Escribe TODOS los textos (why, hook, overlay y captions) en el mismo idioma que se habla en el vídeo. No traduzcas al inglés."
-            : "Escribe TODOS los textos (why, hook, overlay y captions) en este idioma: \(lang). Úsalo aunque el vídeo esté en otro idioma."
+        // Output-language directive. The prompt is in English, so English is the
+        // natural default; naming the target language (by endonym) makes any other
+        // choice reliable too — a Spanish prompt used to leak Spanish output.
+        let name = Self.languageName(language)
+        let languageRule = name.isEmpty
+            ? "OUTPUT LANGUAGE: detect the language spoken in the TRANSCRIPT and write EVERYTHING (why, hook, overlay, captions and hashtags) in that same language."
+            : "OUTPUT LANGUAGE: write EVERYTHING (why, hook, overlay, captions and hashtags) in \(name), no matter what language is spoken in the video. Every single word of the output must be in \(name)."
 
         let style = styleExamples.trimmed
         let styleRule = style.isEmpty ? "" : """
 
-        Voz del creador — imita este estilo (tono, ritmo, emojis, formato):
+        Creator's voice — match this style (tone, rhythm, emojis, formatting):
         \(style)
         """
 
         return """
-        Eres un editor experto en contenido short-form viral (TikTok, Reels, \
-        YouTube Shorts). Te doy la transcripción de un vídeo largo, con timestamps. \
-        Tu trabajo: encontrar los MEJORES momentos para cortar en clips verticales \
-        que enganchen en los 2 primeros segundos, Y para cada clip escribir el \
-        paquete de publicación de las 3 redes.
+        You are an expert short-form video editor (TikTok, Reels, YouTube Shorts). \
+        I give you the transcript of a long video, with timestamps. Your job: find \
+        the BEST moments to cut into vertical clips that hook in the first 2 seconds, \
+        AND for each clip write the full publishing package for all 3 platforms.
 
-        Reglas:
-        - Cada clip dura entre 15 y 50 segundos. Una idea completa, nada cortado a medias.
-        - Entre 3 y 6 clips, ordenados de mejor a peor.
-        - "score": número del 1 al 10 de qué tan viral es (gancho fuerte, pico emocional, payoff/idea completa). 10 = imprescindible.
+        Rules:
+        - Each clip is 15 to 50 seconds. One complete idea, never cut mid-thought.
+        - ALWAYS return between 3 and 6 clips (minimum 3), ranked best to worst; never an empty array.
+        - Each clip's "hook" must be UNIQUE: do not repeat the same hook across clips.
+        - "score": integer 1-10 (strong hook, emotional peak, payoff/complete idea). 10 = essential. Use the full range; don't give every clip the same score.
         - \(languageRule)
-        - Los hashtags van como palabras sueltas, SIN '#', y cada uno único (no repitas).
-        - Devuelve SOLO un JSON válido, sin texto alrededor, con esta forma EXACTA:
+        - Hashtags: quoted JSON strings, NO '#', NO spaces and NO punctuation — ONE single token per hashtag (CamelCase for multiple words, e.g. "AtlantaRealEstate", never "atlanta real estate"). Each unique, in the output language. Counts: TikTok 3, Instagram 6-8, YouTube 3-5.
+        - Return ONLY valid JSON, no text around it, in this EXACT shape:
         {"clips":[{
           "start":"MM:SS",
           "end":"MM:SS",
-          "why":"por qué es viral",
-          "hook":"primera frase del clip que para el scroll",
-          "overlay":"texto MUY corto (3-6 palabras) para sobreimprimir en pantalla",
+          "why":"why this moment is viral",
+          "hook":"the clip's first line that stops the scroll",
+          "overlay":"VERY short text (3-6 words) to superimpose on screen",
           "score":8,
           "captions":{
-            "tiktok":{"hook":"primera línea que para el scroll, máx 90 caracteres","description":"caption corta y con punch","hashtags":["tag","tag","tag"]},
-            "instagram":{"hook":"primera línea fuerte","description":"2-4 párrafos cortos, storytelling, acaba con llamada a la acción","hashtags":["...20-30 tags mezclando alcance grande y nicho..."]},
-            "youtube":{"hook":"título conciso y buscable, 40-60 caracteres","description":"descripción rica en keywords para búsqueda","hashtags":["...3-5 tags..."]}
+            "tiktok":{"hook":"first line that stops the scroll, max 90 characters","description":"short, punchy caption","hashtags":["tagOne","tagTwo","tagThree"]},
+            "instagram":{"hook":"strong first line","description":"1-2 powerful sentences with storytelling and a call to action","hashtags":["tagOne","tagTwo","tagThree","tagFour","tagFive","tagSix"]},
+            "youtube":{"hook":"concise, searchable title, 40-60 characters","description":"keyword-rich description for search","hashtags":["tagOne","tagTwo","tagThree"]}
           }
         }]}
-        - No inventes nada que no esté en la transcripción.\(styleRule)
+        - Don't invent FACTS that aren't in the transcript (names, prices, numbers): every fact must come from that time range. Generic calls to action ("Save this", "Follow for more") are allowed. Each clip's hook must be unique across clips.\(styleRule)
         """
     }
 }

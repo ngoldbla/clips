@@ -66,7 +66,7 @@ What's different about Clipmunk:
   │        ▼                                                              │
   │  ┌──────────────┐   ┌────────────────────┐   ┌───────────────────┐    │
   │  │ WhisperKit   │──►│  Director LLM       │──►│ AVFoundation      │    │
-  │  │ large-v3     │   │  Gemma 4 12B (MLX)  │   │ cut each clip     │    │
+  │  │ large-v3     │   │  Qwen 9B / Gemma 12B│   │ cut each clip     │    │
   │  │ transcribe   │   │  finds moments +    │   │ + reframe 9:16    │    │
   │  │ (GPU)        │   │  writes 3 captions  │   │  (Vision tracking)│    │
   │  └──────────────┘   │  in ONE pass        │   │ + hook overlay    │    │
@@ -117,17 +117,21 @@ the captions:
 
 | Model | Role | Notes |
 |-------|------|-------|
-| **Gemma 4 12B** (default) | Director + inline captions | Strongest writing, one model, one pass. Loaded via MLX. |
-| **Qwen 3.5 9B** | Director + inline captions | Lighter and a bit faster, one pass. Huge context window. |
+| **Qwen 3.5 9B** | Director + inline captions | **Default on 16 GB Macs** — fits in RAM, one pass, huge context window. |
+| **Gemma 4 12B** | Director + inline captions | **Default on 24 GB+ Macs** — strongest writing, but ~13 GB resident, so it swaps on 16 GB. |
 | **Gemma 4 E4B** | Clip-watching copywriter | Multimodal — *watches* each clip (frames + audio) and captions it in a separate pass. Also the model used by *Caption a short*. |
 
-The model downloads once on first use. Everything runs offline afterwards.
+The default is **chosen to fit your Mac's memory**: 16 GB machines get Qwen 3.5 9B (≈6 GB,
+no swapping); 24 GB+ machines get the stronger Gemma 4 12B. You can override the pick in
+Settings — but on 16 GB the 12B will swap and run slowly. The model downloads once on first
+use, then everything runs offline.
 
 ## Requirements
 
 - **Apple Silicon** Mac (M1 or later), **macOS 15+**.
-- **Memory:** **16 GB RAM minimum**, **24 GB+ recommended** — at 24 GB+ Clipmunk keeps both
-  the Director and the copywriter model resident; below that it loads them sequentially.
+- **Memory:** **16 GB RAM minimum**, **24 GB+ recommended**. On 16 GB the Director defaults to
+  Qwen 3.5 9B (≈6 GB) and models load one-at-a-time so nothing swaps; at 24 GB+ Clipmunk runs the
+  stronger Gemma 4 12B Director and can keep both it and the copywriter resident at once.
 - **Disk:** ~**12–14 GB free** for the on-device models downloaded on first run
   (Gemma 4 12B ≈ 7 GB, Gemma 4 E4B ≈ 5 GB, WhisperKit large-v3 ≈ 1.5 GB), plus working
   space for the videos you process. Models download once from Hugging Face, then run offline.

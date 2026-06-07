@@ -157,6 +157,18 @@ final class TranscriptionService {
         findSidecar(for: videoURL) != nil
     }
 
+    /// Releases the in-memory WhisperKit model (~2 GB of CoreML buffers). The
+    /// weights stay cached on disk, so the next transcription reloads quickly. Used
+    /// on memory-constrained Macs to free Whisper before the Director loads — the
+    /// two never need to be resident at the same time (transcription fully precedes
+    /// moment-finding). No-op for the sidecar/YouTube-CC paths that never loaded it.
+    func unload() {
+        guard whisper != nil else { return }
+        whisper = nil
+        phase = .idle
+        Self.log("whisper unloaded to free memory before the Director")
+    }
+
     // MARK: - WhisperKit path
 
     private func transcribeOnDevice(_ videoURL: URL, languageHint: String = "") async throws -> Transcript {

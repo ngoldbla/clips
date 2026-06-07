@@ -7,6 +7,7 @@ import SwiftUI
 struct ShortsProgressView: View {
 
     @Environment(WorkspaceModel.self) private var workspace
+    @Environment(ModelManager.self) private var modelManager
 
     var body: some View {
         VStack(spacing: 26) {
@@ -55,7 +56,11 @@ struct ShortsProgressView: View {
             default:                return "Transcribing your video…"
             }
         case .findingMoments:
-            return "Finding the best moments…"
+            switch modelManager.momentFinder.phase {
+            case .downloading(_): return "Downloading \(modelManager.momentFinder.displayName)…"
+            case .loading:        return "Loading \(modelManager.momentFinder.displayName)…"
+            default:              return "Finding the best moments…"
+            }
         default:
             return "Working…"
         }
@@ -70,7 +75,12 @@ struct ShortsProgressView: View {
             default:                       return "Reading the whole timeline."
             }
         case .findingMoments:
-            return "Qwen 3.5 9B is scanning the transcript — this can take a few minutes."
+            switch modelManager.momentFinder.phase {
+            case .downloading(let f): return "First run only — downloading the model (\(Int(f * 100))%)"
+            case .loading:            return "First run only — preparing the model for your Mac."
+            default:
+                return "\(modelManager.momentFinder.displayName) is scanning the transcript — this can take a few minutes."
+            }
         default:
             return nil
         }

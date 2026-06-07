@@ -22,22 +22,28 @@ final class ModelManager {
     private(set) var phase: Phase = .idle
     private(set) var engine: Gemma4Engine?
 
+    /// True once launch preparation has decided what (if anything) to preload, so
+    /// the workspace can accept work. On 24 GB+ this waits for the copywriter to
+    /// load (fast caption-a-short); on 16 GB it flips immediately and the
+    /// copywriter loads lazily only when a flow needs it.
+    private(set) var isLaunchComplete = false
+
     /// The "Director" — Qwen 3.5 9B, finds viral moments from a transcript.
     /// Loaded lazily on the first long-video drop, not at app launch.
     let momentFinder = MomentFinderService()
 
     // MARK: - Environment facts
 
-    var systemRAMGB: Int { Gemma4ModelCache.systemRAMGB }
+    var systemRAMGB: Int { MemoryPolicy.systemRAMGB }
     var recommendedRAMGB: Int { Self.model.recommendedRAMGB }
     var hasEnoughRAM: Bool { systemRAMGB >= recommendedRAMGB }
     var isModelDownloaded: Bool { Gemma4ModelCache.isDownloaded(Self.model) }
     var estimatedDownloadGB: Int { Int(Self.model.estimatedSizeGB.rounded()) }
 
-    /// True when there's room to keep both Gemma and Qwen resident at once.
-    /// Below this we load them sequentially (free the Director before Gemma
-    /// captioning) to avoid swapping/OOM.
-    var canKeepBothResident: Bool { systemRAMGB >= 24 }
+    /// True when there's room to keep both the copywriter and the Director
+    /// resident at once. Below this we load them sequentially (free the Director
+    /// before captioning) to avoid swapping/OOM.
+    var canKeepBothResident: Bool { MemoryPolicy.canKeepBothResident }
 
     var isReady: Bool { engine != nil }
     var isBusy: Bool {
@@ -48,6 +54,18 @@ final class ModelManager {
     }
 
     // MARK: - Lifecycle
+
+    /// Called once at launch. On Macs with room (24 GB+) it preloads the
+    /// multimodal copywriter so "Caption a short" is instant; on 16 GB it skips the
+    /// preload entirely (the default shorts+inline flow never needs it) and just
+    /// opens the workspace — the copywriter then loads lazily the first time a
+    /// caption flow actually runs.
+    func completeLaunch() async {
+        if MemoryPolicy.shouldPreloadCopywriter {
+            await prepareIfNeeded()
+        }
+        isLaunchComplete = true
+    }
 
     /// Downloads (if needed) and loads the model. Safe to call repeatedly — it
     /// no-ops once the engine is ready or while work is already in flight.
@@ -98,7 +116,17 @@ final class ModelManager {
 
     /// Frees the Director to make room for the Gemma copywriter on tight RAM.
     func freeDirectorIfMemoryTight() {
-        guard !canKeepBothResident else { return }
+        guard MemoryPolicy.isConstrained else { return }
         momentFinder.unload()
+    }
+
+    /// Frees the multimodal copywriter engine (Gemma E4B, ~5 GB) and its Metal
+    /// cache on tight RAM, so a copywriter left resident by a prior caption job
+    /// doesn't sit next to the Director during the shorts pipeline.
+    func freeCopywriterIfMemoryTight() {
+        guard MemoryPolicy.isConstrained, engine != nil else { return }
+        engine = nil
+        phase = .idle
+        MemoryPolicy.releaseCaches()
     }
 }
