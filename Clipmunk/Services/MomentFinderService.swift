@@ -66,7 +66,7 @@ final class MomentFinderService {
         do {
             let downloader = #hubDownloader()
             let localDir = try await downloader.download(
-                id: profile.modelID,
+                id: Self.effectiveModelID(profile.modelID),
                 revision: nil,
                 matching: ["*.safetensors", "*.json", "*.txt", "*.jinja"],
                 useLatest: false,
@@ -134,14 +134,17 @@ final class MomentFinderService {
         var params = GenerateParameters(
             // Captions per clip need much more room than bare moments — a long
             // video can yield 5-6 clips, each with three platforms' caption
-            // package (Instagram alone wants 20-30 hashtags). 6144 covers that;
-            // the repetition penalty stops runaway loops from filling it.
-            maxTokens: includeCaptions ? 6144 : s.maxTokens,
+            // package. 4096 covers the trimmed inline output (~2k tokens for 6
+            // clips) with >2x headroom; the repetition penalty stops runaway loops.
+            maxTokens: includeCaptions ? 4096 : s.maxTokens,
             temperature: s.temperature,
             topP: s.topP,
             topK: s.topK,
             minP: s.minP,
             repetitionPenalty: s.repetitionPenalty)
+        // Bounded, 8-bit KV cache: fits a long transcript in memory and is the
+        // proven-reliable config. (4-bit + quantizedKVStart on a rotating cache
+        // threw KVCacheError intermittently for no measured memory win.)
         params.maxKVSize = s.maxKVSize
         params.kvBits = s.kvBits
 
@@ -158,9 +161,22 @@ final class MomentFinderService {
 
         Self.log("findMoments: transcript \(transcript.count) chars, captions=\(includeCaptions)")
         var raw = ""
+        // Split prefill (time to first token, ~fixed by transcript length) from
+        // generation (scales with output) and log tok/s — a clip-count-independent
+        // speed signal for the optimization loop. Token count approximated as
+        // chars/4 (good enough for run-to-run comparison).
+        let genStart = Date()
+        var firstTokenAt: Date?
         for try await chunk in session.streamResponse(to: userPrompt) {
+            if firstTokenAt == nil { firstTokenAt = Date() }
             raw += chunk
         }
+        let end = Date()
+        let prefillS = (firstTokenAt ?? end).timeIntervalSince(genStart)
+        let genS = max(0.001, end.timeIntervalSince(firstTokenAt ?? genStart))
+        let tokS = (Double(raw.count) / 4.0) / genS
+        Self.log(String(format: "findMoments timing: prefill %.1fs, gen %.1fs, ~%.0f tok/s, %d chars",
+                        prefillS, genS, tokS, raw.count))
         Self.log("findMoments raw output (\(raw.count) chars):\n\(raw)")
 
         let clips = MomentJSONParser.parse(raw)
@@ -171,6 +187,19 @@ final class MomentFinderService {
 
     nonisolated static func log(_ message: String) {
         FileHandle.standardError.write(Data("[clipmunk/director] \(message)\n".utf8))
+    }
+
+    /// DEBUG-only Director-model override for closed-loop A/B of model sizes
+    /// (e.g. CLIPMUNK_DIRECTOR_MODEL=mlx-community/Qwen3.5-4B-MLX-4bit). Returns the
+    /// profile's model in Release and when unset. Same Qwen VLM loader path applies.
+    nonisolated static func effectiveModelID(_ fallback: String) -> String {
+        #if DEBUG
+        if let o = ProcessInfo.processInfo.environment["CLIPMUNK_DIRECTOR_MODEL"], !o.isEmpty {
+            log("director model overridden via env → \(o)")
+            return o
+        }
+        #endif
+        return fallback
     }
 
     /// Captions one clip from its transcript slice (the text-only Copywriter
@@ -278,10 +307,11 @@ final class MomentFinderService {
 
         Reglas:
         - Cada clip dura entre 15 y 50 segundos. Una idea completa, nada cortado a medias.
-        - Entre 3 y 6 clips, ordenados de mejor a peor.
-        - "score": número del 1 al 10 de qué tan viral es (gancho fuerte, pico emocional, payoff/idea completa). 10 = imprescindible.
+        - Devuelve SIEMPRE entre 3 y 6 clips (mínimo 3), ordenados de mejor a peor; nunca un array vacío.
+        - El "hook" de cada clip debe ser ÚNICO: no repitas el mismo gancho entre clips.
+        - "score": entero del 1 al 10 (gancho fuerte, pico emocional, payoff/idea completa). 10 = imprescindible. Usa todo el rango y no pongas el mismo score a todos.
         - \(languageRule)
-        - Los hashtags van como strings JSON entre comillas, SIN el símbolo '#' (ej: "productividad", "marketing"), y cada uno único (no repitas).
+        - Hashtags: strings JSON entre comillas, SIN '#', SIN espacios y SIN puntuación — UN solo token por hashtag (CamelCase para varias palabras, p. ej. "AtlantaRealEstate", nunca "atlanta real estate"). Cada uno único, en el idioma de salida. Conteo: TikTok 3, Instagram 6-8, YouTube 3-5.
         - Devuelve SOLO un JSON válido, sin texto alrededor, con esta forma EXACTA:
         {"clips":[{
           "start":"MM:SS",
@@ -291,12 +321,12 @@ final class MomentFinderService {
           "overlay":"texto MUY corto (3-6 palabras) para sobreimprimir en pantalla",
           "score":8,
           "captions":{
-            "tiktok":{"hook":"primera línea que para el scroll, máx 90 caracteres","description":"caption corta y con punch","hashtags":["tag","tag","tag"]},
-            "instagram":{"hook":"primera línea fuerte","description":"2-4 párrafos cortos, storytelling, acaba con llamada a la acción","hashtags":["...20-30 tags mezclando alcance grande y nicho..."]},
-            "youtube":{"hook":"título conciso y buscable, 40-60 caracteres","description":"descripción rica en keywords para búsqueda","hashtags":["...3-5 tags..."]}
+            "tiktok":{"hook":"primera línea que para el scroll, máx 90 caracteres","description":"caption corta y con punch","hashtags":["tagUno","tagDos","tagTres"]},
+            "instagram":{"hook":"primera línea fuerte","description":"1-2 frases potentes con storytelling y una llamada a la acción","hashtags":["tagUno","tagDos","tagTres","tagCuatro","tagCinco","tagSeis"]},
+            "youtube":{"hook":"título conciso y buscable, 40-60 caracteres","description":"descripción rica en keywords para búsqueda","hashtags":["tagUno","tagDos","tagTres"]}
           }
         }]}
-        - No inventes nada que no esté en la transcripción.\(styleRule)
+        - No inventes DATOS que no estén en la transcripción (nombres, precios, cifras): cada hecho debe estar en ese tramo. Las llamadas a la acción genéricas ("Guárdalo", "Sígueme para más") sí están permitidas. El "hook" de cada clip debe ser único entre clips.\(styleRule)
         """
     }
 }

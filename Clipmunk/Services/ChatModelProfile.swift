@@ -64,6 +64,8 @@ struct ChatModelProfile: Sendable {
         sampling: SamplingConfig(
             temperature: 0.7, topP: 0.8, topK: 20, minP: 0,
             repetitionPenalty: nil, maxTokens: 4096,
+            // KV bounded for very long transcripts, 8-bit. (Proven reliable; 4-bit
+            // on the rotating cache threw KVCacheError for no measured memory gain.)
             maxKVSize: 40960, kvBits: 8))
 
     /// Gemma 4 12B — Google's new dense 12B (text+vision). We feed it the
