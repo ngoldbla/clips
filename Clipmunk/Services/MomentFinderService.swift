@@ -98,9 +98,37 @@ final class MomentFinderService {
             phase = .ready
             Self.log("director loaded: \(profile.displayName) (\(profile.modelID))")
         } catch {
-            Self.log("director load FAILED for \(profile.modelID): \(error)")
-            phase = .failed(error.localizedDescription)
+            let id = Self.effectiveModelID(profile.modelID)
+            if Self.isCorruptDownload(error) {
+                // A half-finished / truncated weights file. Purge it so a retry
+                // re-downloads cleanly instead of failing on the same broken file,
+                // and show a clear message rather than the raw MLX error.
+                Self.purgeModelCache(id)
+                Self.log("director load FAILED (incomplete/corrupt download) for \(id) — cache purged: \(error)")
+                phase = .failed("That model's download was incomplete or corrupted — it's been cleared. Tap Retry to download it again.")
+            } else {
+                Self.log("director load FAILED for \(id): \(error)")
+                phase = .failed(error.localizedDescription)
+            }
         }
+    }
+
+    /// True when a model-load error looks like a truncated/corrupt weights file (a
+    /// download that didn't finish) rather than, say, an out-of-memory error — the
+    /// signature is a malformed safetensors header.
+    nonisolated static func isCorruptDownload(_ error: Error) -> Bool {
+        let s = "\(error)".lowercased()
+        return s.contains("invalid json header") || s.contains("header length")
+            || s.contains("safetensors") || s.contains("unexpected end")
+    }
+
+    /// Removes a model's HuggingFace hub cache directory so the next attempt
+    /// re-downloads it from scratch instead of choking on the same broken file.
+    nonisolated static func purgeModelCache(_ modelID: String) {
+        let dir = "models--" + modelID.replacingOccurrences(of: "/", with: "--")
+        let base = ProcessInfo.processInfo.environment["HF_HOME"].map { URL(fileURLWithPath: $0) }
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".cache/huggingface")
+        try? FileManager.default.removeItem(at: base.appendingPathComponent("hub").appendingPathComponent(dir))
     }
 
     /// Frees the loaded model and its Metal cache. Used by ModelManager to make
