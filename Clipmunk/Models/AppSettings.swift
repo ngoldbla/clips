@@ -85,8 +85,9 @@ final class AppSettings {
         didSet { defaults.set(profileName, forKey: Keys.profile) }
     }
 
-    /// Optional caption language override (e.g. "English", "es"). Empty = match
-    /// the language spoken in the video.
+    /// The language captions are written in. Defaults to "English" so output is
+    /// English-only regardless of the spoken language; empty = match the video's
+    /// language. Drives the Director's output language (see `effectiveLanguage`).
     var languageOverride: String {
         didSet { defaults.set(languageOverride, forKey: Keys.language) }
     }
@@ -157,7 +158,9 @@ final class AppSettings {
             self.apiKey = ""
         }
         self.profileName = defaults.string(forKey: Keys.profile) ?? ""
-        self.languageOverride = defaults.string(forKey: Keys.language) ?? ""
+        // Default to English-only output; the user can switch to another language
+        // or "match the video" (empty) in Settings.
+        self.languageOverride = defaults.string(forKey: Keys.language) ?? "English"
         self.styleExamples = defaults.string(forKey: Keys.style) ?? ""
         // Defaults to true on first launch (no stored value yet).
         self.tiktokAsDraft = defaults.object(forKey: Keys.tiktokDraft) as? Bool ?? true

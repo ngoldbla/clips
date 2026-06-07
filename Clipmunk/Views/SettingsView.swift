@@ -34,10 +34,18 @@ struct SettingsView: View {
             }
 
             Section("Captions") {
-                TextField(
-                    "Language",
-                    text: $settings.languageOverride,
-                    prompt: Text("Auto-detect from the video"))
+                Picker("Caption language", selection: $settings.languageOverride) {
+                    Text("English").tag("English")
+                    Text("Spanish").tag("Spanish")
+                    Text("French").tag("French")
+                    Text("German").tag("German")
+                    Text("Portuguese").tag("Portuguese")
+                    Text("Italian").tag("Italian")
+                    Text("Match the video's language").tag("")
+                }
+                Text("Captions are written in this language no matter what's spoken in the video. Defaults to English; pick \u{201C}Match the video\u{2019}s language\u{201D} to keep the spoken language instead.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Your style examples")

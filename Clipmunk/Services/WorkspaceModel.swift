@@ -276,10 +276,14 @@ final class WorkspaceModel {
             // The two text models write the captions in this same pass.
             let useInlineCaptions = captioningModel.usesInlineCaptions
             let t2 = Date()
+            // Output language: the user's setting (default "English") wins; only
+            // when they choose "match the video" (empty) do we fall back to the
+            // detected spoken language.
+            let outputLanguage = effectiveLanguage(settings, captionLanguage)
             let candidates = try await modelManager.momentFinder.findMoments(
                 transcript: transcript.srtLike(),
                 includeCaptions: useInlineCaptions,
-                language: captionLanguage,
+                language: outputLanguage,
                 styleExamples: settings.styleExamples)
             Self.log("found \(candidates.count) moment(s) in \(Self.elapsed(since: t2)), captions inline=\(useInlineCaptions) — \(MemoryPolicy.snapshot())")
             try Task.checkCancellation()
