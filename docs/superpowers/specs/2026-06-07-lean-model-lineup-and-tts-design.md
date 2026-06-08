@@ -1,8 +1,10 @@
 # Clipmunk: lean 4-engine model lineup + faceless TTS — design
 
-**Status:** Draft for review
-**Date:** 2026-06-07
-**Branch:** `ngoldbla/melbourne`
+**Status:** Phases 1–3 shipped (PRs #4–#6, merged to `main`). Phases 4–5 de-risked against
+the actual `speech-swift` source on 2026-06-07; ready to plan. See §14 for the locked
+Phases 4–5 decisions + verified integration facts.
+**Date:** 2026-06-07 (rev. 2026-06-07 — Phases 4–5 de-risk)
+**Branch:** `ngoldbla/clipmunk-lean-lineup-tts`
 **Supersedes the model choices in:** PR #4 (4B Director), PR #5 (Marlin vision)
 
 ---
@@ -134,9 +136,10 @@ No behavior change. Only its name/id move into `ModelCatalog.vision`, and the
 16 GB (PR #4 had to free it before the Director loads). Parakeet TDT via `speech-swift`
 runs on the ANE at a far smaller footprint, removing that contention.
 
-**Approach.** Add the `soniqo/speech-swift` SwiftPM package (Apache-2.0; macOS 15+/Swift
-6+, both of which Clipmunk already targets — see `project.yml`). Introduce an `ASREngine`
-protocol so the transcription surface is engine-agnostic:
+**Approach.** Add the `soniqo/speech-swift` SwiftPM package (declares macOS 15.0 / Swift
+tools 5.10 — both satisfied by Clipmunk's macOS 15 / Swift 6 target). **Confirm its license
+before shipping** (not verified in de-risk; the package also vends a `SpeechCore.xcframework`
+binary). Introduce an `ASREngine` protocol so the transcription surface is engine-agnostic:
 
 ```swift
 protocol ASREngine {
@@ -153,20 +156,41 @@ and `Transcript { segments: [TranscriptSegment { words: [WordStamp] }] }` output
 - Sidecar `.srt`/`.vtt` and YouTube CC paths win first, unchanged.
 - On-device: **Parakeet** when `MemoryPolicy.isConstrained` **and** language is English/
   unset; otherwise **WhisperKit** (non-English, or 24 GB+ where accuracy is free).
-- **Hard fallback:** any Parakeet load/inference/timestamp failure → WhisperKit. The app
+- **Hard fallback:** any Parakeet load/inference failure → WhisperKit. The app
   cannot lose the ability to transcribe.
 
-**Word timestamps.** `speech-swift` exposes token/sentence timing; if Parakeet TDT word
-boundaries aren't directly available, group tokens→words, else fall back to the existing
-proportional synthesizer (the same one used for timing-less SRT sidecars). Captions need
-word timing; this guarantees they get it.
+**Word timestamps (verified against `speech-swift` source, 2026-06-07).** Neither Parakeet
+API returns per-word or per-token timings: `TranscriptionResult`/`WordConfidence`
+(`AudioCommon`) carry only `text` + `confidence`, and the streaming `PartialTranscript`
+exposes only `{text, isFinal, confidence, eouDetected, segmentIndex}` (utterance boundaries,
+not word times). The TDT decoder computes per-token durations but discards them. **So
+proportional synthesis is the only path here, not a fallback** (decision, §14). `ParakeetEngine`
+uses the **streaming** API and emits one `TranscriptSegment` per utterance
+(`segmentIndex`/`eouDetected`) with `words: []`; the existing
+`Transcript.synthesizeWords(text:start:end:)` (the SRT-sidecar path) fills word stamps
+proportionally. Per-utterance segmentation bounds the drift proportional timing incurs over
+long un-anchored spans. Real word-level timing remains available on the WhisperKit path
+(non-English / 24 GB+). Recovering true Parakeet word timing would require the separate
+Qwen3ASR ForcedAligner — an extra model off the lean lineup; out of scope for v1.
 
-**Audio.** Reuse `MediaExtractor` to get audio, resample to 16 kHz mono `[Float]`, feed the
-engine. **Memory:** `MemoryPolicy.shouldFreeWhisperAfterTranscribe` generalizes to
+**Model + artifacts.** Default model `aufklarer/Parakeet-TDT-v3-CoreML-INT8-30s` (CoreML/ANE,
+INT8); `ParakeetASRModel.fromPretrained()` downloads it from HuggingFace on first run into
+`~/Library/Caches/qwen3-speech/` (`offlineMode: true` only works once cached). Budget
+first-run download + progress UX. Parakeet is CoreML/ANE — it does **not** need the Kokoro
+`mlx.metallib` step (§10).
+
+**Audio.** Reuse `MediaExtractor` to get audio, then **downmix to mono + resample to 16 kHz +
+convert to Float32** (`ParakeetConfig.sampleRate == 16000`; `transcribeAudio(_:sampleRate:language:)`
+wants `[Float]`). Source audio off `AVAsset` is typically 44.1/48 kHz stereo — do the
+rate + channel conversion in one `AVAudioConverter` pass (output `pcmFormatFloat32`,
+`sampleRate: 16000`, `channelCount: 1`), reading `floatChannelData[0]` into `[Float]`.
+**Memory:** `MemoryPolicy.shouldFreeWhisperAfterTranscribe` generalizes to
 `shouldFreeASRAfterTranscribe`; Parakeet (~hundreds of MB) need not be force-freed.
 
-**Caveat (English-only path).** Parakeet-int4/TDT is English-strong; non-English source
-audio routes to WhisperKit automatically, preserving today's multilingual behavior.
+**Caveat (English-first routing).** The TDT-v3 model is multilingual-capable (European
+languages), but v1 routes **English/unset → Parakeet** (when constrained) and **non-English
+→ WhisperKit** automatically, preserving today's multilingual accuracy. Routing signal:
+`Transcript.contentLanguage` (already computed via `NLLanguageRecognizer`).
 
 ## 7. Engine D — Kokoro-82M TTS: faceless narration (new feature)
 
@@ -176,7 +200,13 @@ synthesized voice **replaces** the clip's original audio, and the animated word-
 re-sync to the new narration — turning a cut into a clean B-roll/faceless short.
 
 **Model.** Kokoro-82M via `speech-swift` (`import KokoroTTS`, CoreML/ANE), 24 kHz output,
-~200 MB peak, 32+ voices (EN/JA/ZH). G2P is handled inside the package.
+~200 MB peak. Default model `aufklarer/Kokoro-82M-CoreML` (downloaded on first run). ~54 voices
+across 10 languages — **not** a committed Swift enum; they load at runtime from `voices/*.json`
+in the downloaded model bundle. The voice picker therefore **enumerates the actual installed
+voices at runtime** (decision §14), grouped by language prefix (`af_`/`am_` American,
+`bf_`/`bm_` British, `jf_`/`jm_` Japanese, `zf_`/`zm_` Chinese, …), defaulting to `af_heart`.
+G2P is handled inside the package. **Build note:** Kokoro runs MLX GPU kernels and needs the
+`mlx.metallib` build+bundle step (§10) or it crashes at first GPU op.
 
 **Source text.** The clip's narration text = the Director-written script. Default to the
 clip's primary caption/long-form text (`PostVariant`/`candidate.hook` + caption body);
@@ -186,11 +216,18 @@ narration near clip length.
 **Pipeline (new stage, at render time).** Slots into the existing single composition pass
 (`VerticalReframer.process` / `VideoOverlayRenderer.render`), which already muxes
 video + audio + caption layer:
-1. **Synthesize.** `KokoroTTS.synthesize(text, voice)` → 24 kHz `[Float]` + per-word (or
-   per-token) timings.
-2. **Re-sync captions.** Rebuild the clip's `CaptionScript` from the TTS word timings via
-   the existing `CaptionScript.build(words:clipStart:0,clipEnd:narrationLen)` — captions
-   now track the spoken voice, not the original transcript.
+1. **Synthesize.** `KokoroTTSModel.synthesize(text:voice:language:speed:) throws -> [Float]`
+   (synchronous; 24 kHz mono Float32), after loading once via `try await
+   KokoroTTSModel.fromPretrained()`. Returns **audio only — no timing data** (verified: the
+   model computes a `predDur` phoneme-duration tensor internally but never surfaces it). Call
+   `synthesize(voice:)` directly, **not** the protocol `generate(...)`, which hardwires the
+   default voice and ignores the picker.
+2. **Re-sync captions.** Measure `narrationLen = samples.count / 24000.0`, derive word stamps
+   with the existing `Transcript.synthesizeWords(text:start:0,end:narrationLen)`
+   (character-weighted proportional spread over the *known, clean* script — the accurate case
+   for proportional timing), and feed them to `CaptionScript.build(...)`. Captions track the
+   spoken voice. Plumbing unchanged; only the *source* of word stamps changes from
+   "engine timings" to "proportional over the measured narration length."
 3. **Reconcile duration.** Clip length := narration length. Default reconciliation:
    trim trailing TTS silence; if video < narration, **freeze-hold the last frame** (or
    slow to fit — plan picks one); if video > narration, trim video. (This is the one
@@ -238,8 +275,20 @@ All read against `ModelCatalog` or the actually-loaded descriptor:
   `GemmaService` (single-clip "Caption a short" now runs through the E2B Director on
   transcript + optional Marlin).
 - **UserDefaults migration:** legacy `clipmunk.copywriterModel` values → single Director.
-- **project.yml:** add `speech-swift`; keep WhisperKit (now fallback). Note `speech-swift`
-  may need a Metal-library build step (`make build`) wired into the XcodeGen build.
+- **project.yml:** add `speech-swift` pinned **`exact: "0.0.20"`** (it ships no upstream
+  `Package.resolved`, so freeze it for reproducible CI). Import only `ParakeetASR`/
+  `ParakeetStreamingASR`, `KokoroTTS`, `AudioCommon`. **Bump `WhisperKit` `0.9.0` → `1.0.0`**
+  — `speech-swift` requires `WhisperKit >= 1.0.0` and the ranges are otherwise disjoint (hard
+  `swift package resolve` failure, even though we never link their benchmark). WhisperKit 1.0
+  is a SemVer-major: audit `TranscriptionService`'s WhisperKit call sites (`WhisperKitConfig`,
+  `download(variant:)`, `transcribe`, the word-timestamp struct). WhisperKit 1.0 also **drops
+  its `swift-transformers` dep**, removing the old transitive `<1.2.0` cap, so swift-transformers
+  floats upward — re-verify Gemma4Swift/mlx-swift-lm compile, add a deliberate cap if it drifts.
+  **Metal build step (Kokoro only):** run `speech-swift`'s `scripts/build_mlx_metallib.sh`
+  (needs the Metal Toolchain + native ARM Homebrew) after package resolve, and **copy
+  `mlx.metallib` into `Clipmunk.app` next to the binary before signing/notarization** — else
+  Kokoro crashes at first GPU op and the notarized DMG ships broken. Add a build verification
+  that fails if `mlx.metallib` is missing from the bundle. Parakeet (CoreML/ANE) needs none of this.
 
 ## 11. Build sequence (one PR, reviewable phased commits)
 
@@ -272,11 +321,49 @@ All read against `ModelCatalog` or the actually-loaded descriptor:
   unsloth UD variant is validated alongside and shipped only if it loads + passes the same
   bar. Sub-risk: the `.gemma4Text` text-only path may not support the E-series decoder
   (E4B loads multimodally today), handled by the multimodal-engine-driven-text-only path.
-- **Parakeet word timestamps** via `speech-swift` — may need token→word grouping or
-  proportional synthesis.
-- **`speech-swift` build integration** — Metal library/`make build` step, model artifact
-  download location, first-run latency.
+- **Parakeet word timestamps** — RESOLVED (2026-06-07): `speech-swift` exposes none;
+  proportional synthesis, per-utterance segmented, is the committed path (§6, §14).
+- **`speech-swift` build integration** — RESOLVED/SCOPED: pin `exact: "0.0.20"`; **WhisperKit
+  must bump to `1.0.0`** (resolve-blocker); Kokoro needs the `mlx.metallib` build + bundle-copy
+  step (Metal Toolchain + ARM Homebrew on CI); Parakeet artifacts download to
+  `~/Library/Caches/qwen3-speech/` on first run — budget first-run latency/progress UX (§6, §10).
 - **TTS duration reconciliation** — freeze-hold vs slow-to-fit is a quality call; default
   freeze-hold, revisit if it looks bad on real clips.
 - **E2B quality floor** — below PR #4's 4B finding; the A/B harness is the honest gate,
   with standard-quant E2B / a larger fallback one catalog line away if it underperforms.
+
+## 14. Phases 4–5 de-risk decisions & verified integration facts (2026-06-07)
+
+This section supersedes any conflicting timing/dependency assumptions in §§6–7,10. All facts
+below were verified against the actual `soniqo/speech-swift` source (adversarially, twice).
+
+**Locked decisions (owner Dylan, 2026-06-07):**
+1. **Parakeet captions = proportional, segmented per-utterance.** On 16 GB (the default
+   target) STT routes to Parakeet, which gives no word timings; we accept proportional word
+   timing (segmented per utterance to bound drift) for the memory win. WhisperKit (real
+   timings) remains for non-English / 24 GB+.
+2. **WhisperKit bumps `0.9.0` → `1.0.0`** to satisfy `speech-swift`; adapt
+   `TranscriptionService`'s WhisperKit call sites.
+3. **Kokoro voice picker enumerates installed voices at runtime** from the model bundle's
+   `voices/*.json` (no hardcoded list), grouped by language prefix, default `af_heart`.
+
+**Verified `speech-swift` facts (pin `exact: "0.0.20"`, internal package name `Qwen3Speech`):**
+
+| Item | Value |
+|---|---|
+| Modules to import | `ParakeetASR` / `ParakeetStreamingASR`, `KokoroTTS`, `AudioCommon` |
+| Parakeet model | `aufklarer/Parakeet-TDT-v3-CoreML-INT8-30s` (CoreML/ANE) |
+| Parakeet input | `[Float]` PCM, **16 kHz mono Float32** (`transcribeAudio(_:sampleRate:language:)`) |
+| Parakeet result | `TranscriptionResult { text, language?, confidence, words:[WordConfidence{word,confidence}] }` — **no times**; streaming `PartialTranscript { text, isFinal, confidence, eouDetected, segmentIndex }` |
+| Kokoro load / synth | `try await KokoroTTSModel.fromPretrained()`; `synthesize(text:voice:language:speed:) throws -> [Float]` (sync, **24 kHz mono**, audio only) |
+| Kokoro model / default voice | `aufklarer/Kokoro-82M-CoreML` / `af_heart`. Do **not** use protocol `generate(...)` (hardwires voice). |
+| Artifact cache | `~/Library/Caches/qwen3-speech/` (HuggingFace download on first run) |
+| Metal build (Kokoro only) | `scripts/build_mlx_metallib.sh` → `mlx.metallib` copied into `Clipmunk.app` beside the binary **before signing**; needs Metal Toolchain + ARM Homebrew. Parakeet needs none. |
+
+**Hard gates before the build goes green / ships:**
+- `project.yml`: WhisperKit → `from: "1.0.0"`; add `speech-swift` `exact: "0.0.20"`.
+  Re-check `swift package resolve` succeeds (it fails today).
+- After the bump, compile `TranscriptionService.swift` first; adapt the WhisperKit 1.0 API.
+- Confirm `swift-transformers` (now uncapped) still lets Gemma4Swift/mlx-swift-lm compile;
+  add an explicit cap if it floats too high.
+- Wire + verify the `mlx.metallib` bundle-copy before any Kokoro run and before DMG signing.
