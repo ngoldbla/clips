@@ -124,9 +124,7 @@ final class TranscriptionService {
     private(set) var phase: Phase = .idle
 
     private let whisperEngine = WhisperKitEngine()
-    // Parakeet is added in a later task; until then this stays nil and the router
-    // always uses WhisperKit (behaviour identical to before).
-    @ObservationIgnored private var parakeetEngine: ASREngine? = nil
+    @ObservationIgnored private var parakeetEngine: ASREngine? = ParakeetEngine()
 
     // MARK: - Public
 
@@ -163,14 +161,31 @@ final class TranscriptionService {
     // MARK: - On-device ASR router
 
     private func transcribeOnDevice(_ videoURL: URL, languageHint: String = "") async throws -> Transcript {
-        // Full audio (no cap) → temp .m4a.
         guard let audioURL = try await MediaExtractor.extractAudio(from: videoURL, maxSeconds: nil) else {
             throw TranscriptionError.noAudio
         }
         defer { try? FileManager.default.removeItem(at: audioURL) }
 
-        let engine = whisperEngine   // routing added in a later task
-        let result = try await engine.transcribe(
+        // Parakeet when RAM is tight AND the language is English/unset; otherwise
+        // WhisperKit (non-English, or 24 GB+ where accuracy is free).
+        let hint = TranscriptionService.languageCode(from: languageHint)
+        let englishOrUnset = (hint == nil || hint == "en")
+        let useParakeet = MemoryPolicy.isConstrained && englishOrUnset
+
+        if useParakeet, let parakeet = parakeetEngine {
+            do {
+                let result = try await parakeet.transcribe(
+                    audioURL: audioURL, languageHint: languageHint,
+                    onPhase: { @MainActor [weak self] p in self?.phase = p })
+                phase = .ready
+                return result
+            } catch {
+                // Hard fallback: any Parakeet failure must not lose transcription.
+                TranscriptionService.log("parakeet failed (\(error)) — falling back to WhisperKit")
+                parakeet.unload()
+            }
+        }
+        let result = try await whisperEngine.transcribe(
             audioURL: audioURL, languageHint: languageHint,
             onPhase: { @MainActor [weak self] p in self?.phase = p })
         phase = .ready

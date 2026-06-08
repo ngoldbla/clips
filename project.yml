@@ -212,6 +212,10 @@ targets:
         product: Tokenizers
       - package: WhisperKit
         product: WhisperKit
+      - package: speech-swift
+        product: ParakeetStreamingASR
+      - package: speech-swift
+        product: AudioCommon
     settings:
       base:
         PRODUCT_NAME: shorts-probe
