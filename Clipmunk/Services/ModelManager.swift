@@ -58,10 +58,11 @@ final class ModelManager {
 
     // MARK: - Visual mapper (perception layer)
 
-    /// Loads Marlin if needed for the vision pass. Called from the shorts pipeline
-    /// before the Director, only when the vision pass is enabled.
-    func prepareVisualMapperIfNeeded() async {
-        await visualMapper.prepareIfNeeded()
+    /// Loads Marlin if needed for the (mandatory) vision pass. Called from the
+    /// shorts pipeline before the Director. Throws on download/load failure so the
+    /// pipeline aborts loudly instead of running a blind Director.
+    func prepareVisualMapperIfNeeded() async throws {
+        try await visualMapper.prepareIfNeeded()
     }
 
     /// Frees Marlin (~2.5 GB) right after the vision pass so the Director loads

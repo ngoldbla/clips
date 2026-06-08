@@ -17,9 +17,13 @@ packages:
   # Same MLX stack Gemma4Swift already resolves — declaring the products here
   # just makes them linkable from the app target. Do NOT pin mlx-swift directly:
   # let it stay transitive so it respects Gemma's 0.31.3 floor (single source).
+  # Pinned to an exact revision (not `branch: main`): Marlin-2B (model_type
+  # qwen3_5, a hybrid linear-attention/SSM VLM) relies on the Qwen35 + Qwen3VL
+  # video path here, and `main` moves — a re-resolve could silently change vision
+  # behavior. This SHA is verified to produce correct Marlin captions+timestamps.
   mlx-swift-lm:
     url: https://github.com/ml-explore/mlx-swift-lm
-    branch: main
+    revision: a47894a1e7e963b24bd48c030f5fc1d1627e60e9
   swift-huggingface:
     url: https://github.com/huggingface/swift-huggingface
     from: "0.9.0"

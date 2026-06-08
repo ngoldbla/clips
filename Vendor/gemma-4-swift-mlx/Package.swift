@@ -11,7 +11,10 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/ml-explore/mlx-swift", from: "0.31.3"),
         .package(url: "https://github.com/huggingface/swift-transformers", from: "1.1.6"),
-        .package(url: "https://github.com/ml-explore/mlx-swift-lm", branch: "main"),
+        // Pinned to an exact revision (was `branch: "main"`): the app pins the same
+        // SHA, and SPM forbids two different revision-based requirements for one
+        // package. Keep this in lockstep with `mlx-swift-lm` in the app's project.yml.
+        .package(url: "https://github.com/ml-explore/mlx-swift-lm", revision: "a47894a1e7e963b24bd48c030f5fc1d1627e60e9"),
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.2.0"),
         .package(url: "https://github.com/VincentGourbin/swift-mlx-profiler", from: "1.4.0"),
     ],

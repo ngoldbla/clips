@@ -260,13 +260,18 @@ final class WorkspaceModel {
             }
             MemoryPolicy.releaseCaches()
 
-            // 1.5 Vision pass (optional): Marlin-2B watches the footage and hands
-            //     the Director a timestamped "what's on screen, when" track merged
-            //     into the transcript — so the moment-finder sees B-roll, on-screen
-            //     text and scene changes the words alone don't reveal. Runs before
-            //     the Director and is freed right after, so on a 16 GB Mac only one
-            //     large model is resident at a time. Falls back to the plain
-            //     transcript on any failure (never blocks the pipeline).
+            // 1.5 Vision pass (MANDATORY): Marlin-2B is Clipmunk's perception
+            //     layer. Before the Director picks moments, Marlin watches the
+            //     footage and hands it a timestamped "what's on screen, when" track
+            //     merged into the transcript — B-roll, on-screen text and scene
+            //     changes the words alone don't reveal. It runs before the Director
+            //     and is freed right after (the `defer`), so on a 16 GB Mac only one
+            //     large model is resident at a time. A real failure ABORTS the job
+            //     (surfaced in the UI by the pipeline's error handler) rather than
+            //     silently degrading to a blind Director. Only a clean-but-empty
+            //     result (Marlin ran, footage had nothing visual to add) proceeds on
+            //     the transcript alone. A DEBUG-only `CLIPMUNK_VISION_PASS=0` skips
+            //     it for the baseline-vs-augmented A/B; in release it is always on.
             var directorTranscript = transcript.srtLike()
             if settings.effectiveVisionPass {
                 // Surface progress as "finding moments" — the vision pass is the
@@ -274,7 +279,10 @@ final class WorkspaceModel {
                 phase = .findingMoments
                 let tv = Date()
                 Self.log("vision pass: watching footage with Marlin-2B…")
-                await modelManager.prepareVisualMapperIfNeeded()
+                // Free Marlin on every exit (success, empty, error) — and before
+                // the Director loads — to keep one large model resident at a time.
+                defer { modelManager.freeVisualMapper() }
+                try await modelManager.prepareVisualMapperIfNeeded()
                 do {
                     let timeline = try await modelManager.visualMapper.mapVideo(url: newJob.url)
                     if !timeline.isEmpty {
@@ -289,15 +297,17 @@ final class WorkspaceModel {
                         }
                         #endif
                     } else {
+                        // Marlin ran cleanly but had nothing visual to add (e.g. a
+                        // static talking-head): not a failure — proceed on the
+                        // transcript alone.
                         Self.log("vision pass: no usable visual signal — using transcript only")
                     }
                 } catch is CancellationError {
-                    modelManager.freeVisualMapper()
                     throw CancellationError()
-                } catch {
-                    Self.log("vision pass FAILED (\(error)) — falling back to transcript only")
                 }
-                modelManager.freeVisualMapper()
+                // Any non-cancellation error propagates to the pipeline's error
+                // handler: the vision pass is mandatory, so we never silently fall
+                // back to a blind Director.
                 try Task.checkCancellation()
             }
 

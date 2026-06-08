@@ -155,9 +155,8 @@ struct SettingsView: View {
                 }
             }
 
-            Section("Vision-aware moment-finding (opt-in)") {
-                Toggle("Let the model watch the video before picking moments", isOn: $settings.visionAwareMomentFinding)
-                Text("Before the Director chooses clips, the on-device Marlin-2B video model watches the footage and hands it a timestamped \u{201C}what's on screen, when\u{201D} track — B-roll, on-screen text, scene changes the transcript can't reveal. Improves picks for visually rich videos, but adds a vision pass (extra time and a ~2.5 GB model download on first use). Off by default.")
+            Section("Vision-aware moment-finding") {
+                Text("Before the Director chooses clips, the on-device Marlin-2B video model watches the footage and hands it a timestamped \u{201C}what's on screen, when\u{201D} track — B-roll, on-screen text, scene changes the transcript can't reveal. This perception pass is core to how Clipmunk picks moments, so it always runs. It adds a vision pass before moment-finding (extra time, and a ~2.5 GB model download on first use).")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

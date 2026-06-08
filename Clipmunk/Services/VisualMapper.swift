@@ -84,7 +84,9 @@ final class VisualMapper {
     // MARK: - Lifecycle
 
     /// Downloads (if needed) and loads Marlin. Lazy — only when a vision pass runs.
-    func prepareIfNeeded() async {
+    /// Throws on download/load failure so the (mandatory) caller can abort loudly
+    /// instead of running a blind Director.
+    func prepareIfNeeded() async throws {
         guard container == nil, !isBusy else { return }
         phase = .downloading(fraction: 0)
         do {
@@ -109,6 +111,7 @@ final class VisualMapper {
         } catch {
             Self.log("load FAILED: \(error)")
             phase = .failed(error.localizedDescription)
+            throw error
         }
     }
 
