@@ -5,12 +5,12 @@ import MLX
 /// without swapping on a 16 GB Apple Silicon Mac while still using the stronger
 /// models when there's headroom (24 GB+).
 ///
-/// Why this exists: the heavy path is the "Director" LLM (Gemma 4 12B ≈ 13 GB
-/// resident, Qwen 3.5 9B ≈ 6 GB) plus the optional E4B copywriter (~5 GB) and
-/// WhisperKit (~2 GB CoreML). On 16 GB, loading the 12B — or keeping E4B resident
-/// next to any Director, or Whisper next to the Director — overflows physical RAM
-/// and macOS swaps, turning a 2-minute job into an hour. Every decision here keeps
-/// at most one large model resident at a time and sizes the Director to the Mac.
+/// Why this exists: even the lean lineup must stay within physical RAM on a 16 GB
+/// Mac. The heavy resident is the "Director" LLM (Gemma 4 E2B ≈ 3.6 GB); the
+/// optional Marlin-2B vision pass (~2.5 GB) and the STT engine (WhisperKit ~2 GB
+/// CoreML, or Parakeet ~0.6 GB) must not be resident alongside it, and Kokoro TTS
+/// (~0.2 GB) loads only at render time after the Director is freed. Keeping at most
+/// one large model resident at a time is what holds the project's ~0-swap bar.
 enum MemoryPolicy {
 
     /// Physical RAM in whole GB (unified memory on Apple Silicon).
@@ -31,9 +31,10 @@ enum MemoryPolicy {
     /// it, so the default shorts+inline path never pays for a model it won't use.
     static var shouldPreloadCopywriter: Bool { canKeepBothResident }
 
-    /// Free WhisperKit (~2 GB CoreML) after transcription, before the Director
-    /// loads — on 16 GB the two shouldn't be resident together.
-    static var shouldFreeWhisperAfterTranscribe: Bool { isConstrained }
+    /// Free the ASR model (WhisperKit ~2 GB CoreML, or Parakeet ~0.6 GB) after
+    /// transcription, before the Director loads — on 16 GB the two shouldn't be
+    /// resident together.
+    static var shouldFreeASRAfterTranscribe: Bool { isConstrained }
 
     /// Configure MLX's Metal allocator for this Mac. Caps the reuse-buffer cache so
     /// freed weights/KV return to the OS instead of being hoarded, and sets a soft

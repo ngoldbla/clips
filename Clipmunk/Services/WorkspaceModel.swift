@@ -201,7 +201,7 @@ final class WorkspaceModel {
             let transcript = try await transcription.transcript(
                 for: newJob.url, languageHint: settings.languageOverride)
             let captionLanguage = transcript.contentLanguage ?? transcript.language
-            if MemoryPolicy.shouldFreeWhisperAfterTranscribe { transcription.unload() }
+            if MemoryPolicy.shouldFreeASRAfterTranscribe { transcription.unload() }
             MemoryPolicy.releaseCaches()
 
             await modelManager.prepareDirector(profile: .director)
@@ -255,7 +255,7 @@ final class WorkspaceModel {
             // On tight RAM, clear the decks before the heavy Director loads:
             // transcription is done, so free WhisperKit (~2 GB CoreML). The Director
             // then loads into a clean memory state instead of on top of it.
-            if MemoryPolicy.shouldFreeWhisperAfterTranscribe {
+            if MemoryPolicy.shouldFreeASRAfterTranscribe {
                 transcription.unload()
             }
             MemoryPolicy.releaseCaches()
@@ -331,7 +331,9 @@ final class WorkspaceModel {
                           overlayEnabled: settings.burnHookOverlay,
                           reframeEnabled: settings.reframeToVertical,
                           captionsEnabled: settings.burnCaptions,
-                          captionStyle: captionStyle)
+                          captionStyle: captionStyle,
+                          narrationEnabled: settings.ttsEnabled,
+                          narrationVoiceID: settings.ttsVoiceID)
             }
             phase = .shortsResults
 

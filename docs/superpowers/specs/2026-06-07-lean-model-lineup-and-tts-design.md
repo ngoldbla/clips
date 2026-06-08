@@ -367,3 +367,32 @@ below were verified against the actual `soniqo/speech-swift` source (adversarial
 - Confirm `swift-transformers` (now uncapped) still lets Gemma4Swift/mlx-swift-lm compile;
   add an explicit cap if it floats too high.
 - Wire + verify the `mlx.metallib` bundle-copy before any Kokoro run and before DMG signing.
+
+## 15. As-built status (Phases 4–5 SHIPPED, 2026-06-08)
+
+§6 (Parakeet) and §7 (Kokoro) are implemented and verified end-to-end on a **16 GB** M-series
+Mac (the constrained default path). The app, `shorts-probe` and `narration-probe` build green;
+a forced-Parakeet `shorts-probe` run produced `SHORTS_OK`, and `narration-probe` produced valid
+faceless clips for both the trim and freeze-hold duration cases.
+
+As-built deviations from the plan (all deliberate, verified against the resolved `speech-swift`
+`0.0.20` source — pinned in `project.yml` via `exactVersion: "0.0.20"`):
+
+- **Parakeet model = `aufklarer/Parakeet-EOU-120M-CoreML-INT8`** (the streaming EOU model that
+  `ParakeetStreamingASRModel.fromPretrained()` actually downloads), *not* `Parakeet-TDT-v3`.
+  `ModelCatalog.stt` and the README reflect this.
+- **EOU under-segments monologue audio** (it segments on conversational turns, returning one
+  long, punctuation-less utterance). `ParakeetEngine` re-chunks such output into ~6 s word
+  groups so proportional caption drift stays bounded per segment (decision §14.1's intent).
+- **`ASREngine.transcribe` takes `audioURL`** (extracted `.m4a`); routing + the WhisperKit hard
+  fallback live entirely inside `TranscriptionService`; a `CLIPMUNK_STT` DEBUG env override
+  forces an engine for A/B.
+- **Narration is a render pre-stage** via `NarrationComposer` (audio swap + freeze-hold/trim);
+  captions re-sync proportionally over the narration length; any failure falls back to the
+  original-audio path.
+- **Kokoro's E2E graph is fixed at 128 phonemes (~5 s)**, so `NarrationService` chunks long
+  scripts (sentence/word packing) and stitches the pieces with a short silence gap — a full
+  script is narrated, not truncated.
+- **No `mlx.metallib` step needed (Task 5.8 skipped).** A real `narration-probe --selftest`
+  Kokoro synthesize succeeds with the existing mlx-swift build — no "default metallib" failure.
+- **`speech-swift` license = Apache 2.0** — compatible with shipping in a signed/notarized DMG.

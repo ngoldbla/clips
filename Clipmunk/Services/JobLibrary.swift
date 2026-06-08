@@ -16,6 +16,10 @@ struct StoredClip: Codable, Sendable {
     var isLandscape: Bool
     var captionsEnabled: Bool
     var captionStyleID: String
+    /// Faceless-voiceover state. Defaults make these optional to the synthesized
+    /// Codable decoder, so pre-narration manifests still reopen cleanly.
+    var narrationEnabled: Bool = false
+    var narrationVoiceID: String = "af_heart"
     /// Filename of the copied raw cut, inside the bundle's `clips/` folder.
     var clipFile: String
     var durationSeconds: Double

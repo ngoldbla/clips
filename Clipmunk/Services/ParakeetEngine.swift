@@ -76,6 +76,17 @@ final class ParakeetEngine: ASREngine {
         if utterances.count <= 1, let whole = utterances.first {
             utterances = Self.splitSentences(whole)
         }
+        // The EOU streaming model often returns a single long, punctuation-less
+        // utterance (it segments on conversational turns, not sentences), which
+        // would leave one caption segment spanning the whole clip. Re-chunk into
+        // roughly fixed-length pieces (~6 s each) so proportional word drift stays
+        // bounded per segment — the per-utterance bound decision §14.1 intends.
+        let targetSegments = max(1, Int((totalDuration / 6.0).rounded()))
+        if utterances.count < targetSegments {
+            let rechunked = Self.chunkByWords(
+                utterances.joined(separator: " "), targetSegments: targetSegments)
+            if rechunked.count > utterances.count { utterances = rechunked }
+        }
 
         let segments = ParakeetSegmenter.segmentize(utterances: utterances, totalDuration: totalDuration)
         guard !segments.isEmpty else { throw TranscriptionError.empty }
@@ -100,5 +111,21 @@ final class ParakeetEngine: ASREngine {
         let tail = current.trimmingCharacters(in: .whitespacesAndNewlines)
         if !tail.isEmpty { out.append(tail) }
         return out.isEmpty ? [text] : out
+    }
+
+    /// Splits `text` into ~`targetSegments` roughly equal word-count chunks. Used
+    /// when the streaming model under-segments a long utterance, so each caption
+    /// segment spans only a few seconds rather than the whole clip.
+    private static func chunkByWords(_ text: String, targetSegments: Int) -> [String] {
+        let words = text.split(whereSeparator: { $0 == " " || $0 == "\n" || $0 == "\t" }).map(String.init)
+        guard targetSegments > 1, words.count > targetSegments else { return [text] }
+        let per = max(1, Int((Double(words.count) / Double(targetSegments)).rounded(.up)))
+        var out: [String] = []
+        var i = 0
+        while i < words.count {
+            out.append(words[i..<min(i + per, words.count)].joined(separator: " "))
+            i += per
+        }
+        return out
     }
 }

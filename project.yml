@@ -223,6 +223,69 @@ targets:
         MACOSX_DEPLOYMENT_TARGET: "15.0"
         GENERATE_INFOPLIST_FILE: YES
 
+  # Developer-only headless narration probe: synthesize + audio-swap + reconcile
+  # + reframe/captions on a real clip, writing a faceless sample .mp4. Also has a
+  # --selftest mode for the pure helpers + a real Kokoro synthesize (where the
+  # Kokoro metallib question is answered empirically).
+  narration-probe:
+    type: tool
+    platform: macOS
+    sources:
+      - path: NarrationProbe
+      - path: Clipmunk/Services/TranscriptionService.swift
+      - path: Clipmunk/Services/ASREngine.swift
+      - path: Clipmunk/Services/WhisperKitEngine.swift
+      - path: Clipmunk/Services/ParakeetEngine.swift
+      - path: Clipmunk/Services/AudioResampler.swift
+      - path: Clipmunk/Services/MomentFinderService.swift
+      - path: Clipmunk/Services/ChatModelProfile.swift
+      - path: Clipmunk/Services/ModelCatalog.swift
+      - path: Clipmunk/Services/MemoryPolicy.swift
+      - path: Clipmunk/Services/PromptBuilder.swift
+      - path: Clipmunk/Services/JSONVariantParser.swift
+      - path: Clipmunk/Services/MediaExtractor.swift
+      - path: Clipmunk/Services/VerticalReframer.swift
+      - path: Clipmunk/Services/VideoOverlayRenderer.swift
+      - path: Clipmunk/Services/CaptionRenderer.swift
+      - path: Clipmunk/Services/AudioActivityAnalyzer.swift
+      - path: Clipmunk/Services/CaptionScript.swift
+      - path: Clipmunk/Services/NarrationService.swift
+      - path: Clipmunk/Services/NarrationComposer.swift
+      - path: Clipmunk/Services/VoiceCatalog.swift
+      - path: Clipmunk/Models/ClipCandidate.swift
+      - path: Clipmunk/Models/PostVariant.swift
+      - path: Clipmunk/Models/WordStamp.swift
+      - path: Clipmunk/Models/VideoJob.swift
+      - path: Clipmunk/Models/CaptionStyle.swift
+      - path: Clipmunk/Models/String+Trimmed.swift
+    dependencies:
+      - package: Gemma4Swift
+        product: Gemma4Swift
+      - package: mlx-swift-lm
+        product: MLXVLM
+      - package: mlx-swift-lm
+        product: MLXLMCommon
+      - package: mlx-swift-lm
+        product: MLXHuggingFace
+      - package: swift-huggingface
+        product: HuggingFace
+      - package: swift-transformers
+        product: Tokenizers
+      - package: WhisperKit
+        product: WhisperKit
+      - package: speech-swift
+        product: ParakeetStreamingASR
+      - package: speech-swift
+        product: KokoroTTS
+      - package: speech-swift
+        product: AudioCommon
+    settings:
+      base:
+        PRODUCT_NAME: narration-probe
+        SWIFT_VERSION: "6.0"
+        MACOSX_DEPLOYMENT_TARGET: "15.0"
+        GENERATE_INFOPLIST_FILE: YES
+
   # Developer-only command-line probe. Runs the real generation path
   # (MediaExtractor → Gemma4Engine → JSONVariantParser) headlessly.
   clipmunk-probe:

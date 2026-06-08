@@ -90,9 +90,10 @@ What's different about Clipmunk:
 Concretely:
 
 1. **Transcribe.** If the video has a `.srt`/`.vtt` sidecar, it's used instantly.
-   Otherwise **WhisperKit** (`large-v3`) transcribes on the GPU. The transcript's
-   language is detected from the *text* (NaturalLanguage), so captions stay in the
-   spoken language.
+   Otherwise it transcribes on-device: **Parakeet** (CoreML/ANE, ~0.6 GB) on memory-tight
+   Macs for English, falling back to **WhisperKit** (`large-v3`) for non-English or when
+   there's RAM headroom. The transcript's language is detected from the *text*
+   (NaturalLanguage), so captions stay in the spoken language.
 2. **Find the moments + write the copy.** The **Director** — an on-device LLM — reads the
    whole transcript and returns a single JSON: the best clips (start/end, why, hook, a
    short on-screen overlay) **and** the full TikTok / Instagram / YouTube caption package
@@ -127,9 +128,10 @@ per-machine split — the same lean model runs everywhere.
 - **Memory:** **16 GB RAM minimum**. The Director (Gemma 4 E2B) and the optional Marlin-2B
   vision pass load one-at-a-time, so nothing swaps on 16 GB.
 - **Disk:** ~**6 GB free** for the on-device models downloaded on first run
-  (Gemma 4 E2B ≈ 3.6 GB, WhisperKit large-v3 ≈ 1.5 GB), plus the optional Marlin-2B vision
-  model (~2.5 GB) and working space for the videos you process. Models download once from
-  Hugging Face, then run offline.
+  (Gemma 4 E2B ≈ 3.6 GB; the lean Parakeet STT ≈ 0.6 GB, or WhisperKit large-v3 ≈ 1.5 GB),
+  plus the optional Marlin-2B vision model (~2.5 GB) and Kokoro voiceover (~0.3 GB) when used,
+  and working space for the videos you process. Models download once from Hugging Face, then
+  run offline.
 
 ## Install
 
@@ -195,9 +197,10 @@ Pre-release tags (e.g. `v0.1.0-rc1`) publish as GitHub **pre-releases**; final
 | Layer            | Used                                                                  |
 |------------------|-----------------------------------------------------------------------|
 | UI               | SwiftUI · AVKit                                                       |
-| Transcription    | [WhisperKit](https://github.com/argmaxinc/WhisperKit) `large-v3` (Metal/GPU) |
+| Transcription    | [Parakeet](https://github.com/soniqo/speech-swift) (CoreML/ANE, default on ≤16 GB) · [WhisperKit](https://github.com/argmaxinc/WhisperKit) `large-v3` fallback + non-English |
 | Director model   | Gemma 4 E2B (4-bit), runs as a text LLM via MLX — finds moments + writes captions |
 | Vision map (opt) | Marlin-2B (8-bit) — watches the footage, hands the Director an on-screen track |
+| Faceless voice (opt) | Kokoro-82M (CoreML/ANE) via [speech-swift](https://github.com/soniqo/speech-swift) — swaps a clip's audio for a synth voiceover, re-syncs captions |
 | Inference        | [MLX](https://github.com/ml-explore/mlx-swift) (Metal, Neural Engine) |
 | Gemma 4 runtime  | [gemma-4-swift-mlx](https://github.com/VincentGourbin/gemma-4-swift-mlx), vendored in `Vendor/` |
 | Vertical reframe | Vision (face detection) + AVFoundation (transform ramps / Core Image)|
