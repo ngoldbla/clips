@@ -165,8 +165,8 @@ On Apple Silicon. macOS 15+.
 
 ```bash
 brew install xcodegen
-git clone https://github.com/ngoldbla/clips
-cd clips
+git clone https://github.com/ngoldbla/clipmunk
+cd clipmunk
 xcodegen generate
 open Clipmunk.xcodeproj
 ```

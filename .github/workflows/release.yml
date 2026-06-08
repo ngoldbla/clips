@@ -61,14 +61,80 @@ jobs:
       - name: Build (Release, Developer ID, hardened runtime)
         run: |
           set -euo pipefail
+          # On a v* tag, stamp the shipped version from the tag (v1.2.3 -> 1.2.3,
+          # build number = the CI run number). On workflow_dispatch (ref is a
+          # branch) keep project.yml's MARKETING_VERSION. Values are digits/dots
+          # only, so unquoted word-splitting of $VERSION_ARGS is safe.
+          VERSION_ARGS=""
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            # v0.1.0 -> 0.1.0 ; v0.1.0-rc1 -> 0.1.0 (keep CFBundleShortVersionString
+            # a clean 3-component version; the full tag is the release name).
+            V="${GITHUB_REF_NAME#v}"; V="${V%%-*}"
+            VERSION_ARGS="MARKETING_VERSION=$V CURRENT_PROJECT_VERSION=$GITHUB_RUN_NUMBER"
+          fi
           xcodebuild -project Clipmunk.xcodeproj -scheme "$SCHEME" -configuration Release \
             -derivedDataPath build -skipMacroValidation -skipPackagePluginValidation \
             -destination 'platform=macOS' \
             CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="Developer ID Application" \
             DEVELOPMENT_TEAM="${{ secrets.APPLE_TEAM_ID }}" \
             OTHER_CODE_SIGN_FLAGS="--timestamp --options runtime" \
+            $VERSION_ARGS \
             clean build
-          codesign --verify --strict --verbose=2 "build/Build/Products/Release/$APP_NAME.app"
+          APP="build/Build/Products/Release/$APP_NAME.app"
+          codesign --verify --strict --verbose=2 "$APP"
+          # Guard 1 (structural): the precompiled MLX Metal kernels must be in the
+          # bundle, or every MLX op (Gemma Director + mandatory Marlin vision)
+          # crashes at runtime. Notary can't see this — it's a launch-time failure.
+          find "$APP" -name '*.metallib' | grep -q . \
+            || { echo "::error::no .metallib in app bundle — Metal Toolchain missing at build time?"; exit 1; }
+          # Guard 2 (signing invariant): get-task-allow must be ABSENT — Apple's
+          # notary rejects it, and it weakens the hardened runtime if it slips in.
+          codesign -d --entitlements :- "$APP" 2>/dev/null > /tmp/ents.plist || true
+          if grep -q 'get-task-allow' /tmp/ents.plist; then
+            echo "::error::get-task-allow present in entitlements — would fail notarization"; exit 1
+          fi
+
+      - name: MLX launch gate (signed+hardened Director must actually infer)
+        # Notarization proves the app is *signed* correctly — NOT that it *runs*.
+        # The real out-of-the-gate risk is an MLX/Metal/library-validation crash
+        # on first inference under hardened runtime. director-probe loads the real
+        # Gemma 4 E2B Director (MLX) headlessly and runs one moment-find pass; we
+        # build it with the SAME Developer ID + hardened-runtime signing as the app
+        # so a runtime failure fails the release here, before anything is published.
+        # (`open`-ing the app would be a false green: every model loads lazily, so
+        # nothing touches Metal at launch.)
+        run: |
+          set -euo pipefail
+          # Reuses the MLX deps already compiled in the app build (same derivedData).
+          xcodebuild -project Clipmunk.xcodeproj -scheme director-probe -configuration Release \
+            -derivedDataPath build -skipMacroValidation -skipPackagePluginValidation \
+            -destination 'platform=macOS' \
+            CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="Developer ID Application" \
+            DEVELOPMENT_TEAM="${{ secrets.APPLE_TEAM_ID }}" \
+            ENABLE_HARDENED_RUNTIME=YES \
+            OTHER_CODE_SIGN_FLAGS="--timestamp --options runtime" \
+            build
+          PROBE="build/Build/Products/Release/director-probe"
+          codesign --verify --strict "$PROBE"
+          # Run the real Gemma E2B (MLX) inference under hardened runtime. Downloads
+          # the model (~1.5 GB) once from Hugging Face — this is exactly the
+          # "models download on first use" path the release must work on. One retry
+          # absorbs a transient Hugging Face hiccup; a real crash still fails.
+          ok=
+          for attempt in 1 2; do
+            if "$PROBE" 2>&1 | tee /tmp/director.txt && grep -q 'FINDMOMENTS_OK' /tmp/director.txt; then
+              ok=1; break
+            fi
+            echo "==> director-probe attempt ${attempt} did not reach FINDMOMENTS_OK; retrying in 15s"
+            sleep 15
+          done
+          [ -n "$ok" ] || { echo "::error::director-probe never reached FINDMOMENTS_OK — MLX path broken under hardened runtime"; exit 1; }
+          # FINDMOMENTS_OK already proves MLX inferred under hardened runtime (a kill
+          # would have prevented it). Surface any hard-crash log lines for diagnostics,
+          # but don't fail on them — they'd only be false positives at this point.
+          log show --last 10m --predicate 'process == "director-probe"' 2>/dev/null \
+            | grep -iE 'EXC_BAD|EXC_CRASH|Killed:|library validation failed' || true
+          echo "==> MLX launch gate passed: signed+hardened Director inferred successfully"
 
       - name: Notarize and staple the app
         env:
@@ -111,7 +177,10 @@ jobs:
 
       - name: Verify notarization
         run: |
-          spctl -a -t open --context context:primary-signature -v "dist/$APP_NAME.dmg" || true
+          set -euo pipefail
+          # A real Gatekeeper assessment must PASS — don't swallow a rejection.
+          spctl -a -t open --context context:primary-signature -vvv "dist/$APP_NAME.dmg" 2>&1 | tee /tmp/spctl.txt
+          grep -q ': accepted' /tmp/spctl.txt
           xcrun stapler validate "dist/$APP_NAME.dmg"
 
       - name: Upload DMG artifact (always)
@@ -132,7 +201,25 @@ jobs:
           fail_on_unmatched_files: true
           generate_release_notes: true
           prerelease: ${{ contains(github.ref_name, '-') }}
+          body: |
+            ## Clipmunk — long videos → vertical shorts, fully on-device
 
-      - name: Clean up keychain
+            **Requirements: Apple Silicon Mac (M1 or later), macOS 15 (Sequoia) or newer.** Intel Macs are not supported.
+
+            ### Install
+            1. Download `Clipmunk.dmg` below.
+            2. Open it and drag **Clipmunk** to your Applications folder, then launch it.
+
+            The DMG is signed with an Apple Developer ID certificate and notarized by Apple, so it opens normally — **no Gatekeeper warning and no Terminal workaround.**
+
+            ### First launch
+            - On first use Clipmunk downloads **~6 GB of on-device AI models** from Hugging Face (one-time): the Gemma 4 E2B "director", the always-on Marlin-2B vision model, and a transcription model. Keep the app open and make sure you have free disk space.
+            - The first video also spends a minute or two optimizing the models for your Mac. **After that, everything runs offline.**
+            - Publishing/scheduling to social networks is optional and needs an [Upload-Post](https://upload-post.com) API key.
+
+      - name: Clean up secrets and keychain
         if: always()
-        run: security delete-keychain "$KEYCHAIN" || true
+        run: |
+          # Scrub the decoded cert / notary key / app zip from the runner before it's reused.
+          rm -f "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/notary-key.p8" "$RUNNER_TEMP/$APP_NAME.zip" || true
+          security delete-keychain "$KEYCHAIN" || true
