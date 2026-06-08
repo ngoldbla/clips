@@ -1,7 +1,6 @@
 import Foundation
 import NaturalLanguage
 import Observation
-@preconcurrency import WhisperKit
 
 /// One spoken segment with its time range, in seconds.
 ///
@@ -103,8 +102,8 @@ struct Transcript: Sendable, Equatable, Codable {
 }
 
 /// Produces a `Transcript` for a long video. Prefers an existing `.srt`/`.vtt`
-/// sidecar (instant, no download); falls back to on-device WhisperKit only when
-/// none is found — so the Whisper model never downloads for users who already
+/// sidecar (instant, no download); falls back to on-device ASR only when
+/// none is found — so the model never downloads for users who already
 /// have transcripts.
 @MainActor
 @Observable
@@ -123,20 +122,11 @@ final class TranscriptionService {
     }
 
     private(set) var phase: Phase = .idle
-    private var whisper: WhisperKit?
 
-    /// Whisper variants to prefer, best-first; falls back to the device default
-    /// (`openai_whisper-base`, which is multilingual). MUST be multilingual —
-    /// distil-* models are English-only and turn other languages into phonetic
-    /// gibberish, so they are deliberately excluded.
-    private static let preferredVariants = [
-        // Full large-v3 transcribes Spanish (and other languages) reliably. The
-        // turbo variant was faster on paper but mis-decoded non-English audio
-        // here, so it's deliberately not preferred.
-        "openai_whisper-large-v3",
-        "openai_whisper-large-v3_947MB",
-        "openai_whisper-small",
-    ]
+    private let whisperEngine = WhisperKitEngine()
+    // Parakeet is added in a later task; until then this stays nil and the router
+    // always uses WhisperKit (behaviour identical to before).
+    @ObservationIgnored private var parakeetEngine: ASREngine? = nil
 
     // MARK: - Public
 
@@ -157,19 +147,20 @@ final class TranscriptionService {
         findSidecar(for: videoURL) != nil
     }
 
-    /// Releases the in-memory WhisperKit model (~2 GB of CoreML buffers). The
+    /// Releases the in-memory ASR models (~2 GB of CoreML buffers). The
     /// weights stay cached on disk, so the next transcription reloads quickly. Used
-    /// on memory-constrained Macs to free Whisper before the Director loads — the
-    /// two never need to be resident at the same time (transcription fully precedes
-    /// moment-finding). No-op for the sidecar/YouTube-CC paths that never loaded it.
+    /// on memory-constrained Macs to free the STT engine before the Director loads —
+    /// the two never need to be resident at the same time (transcription fully
+    /// precedes moment-finding). No-op for the sidecar/YouTube-CC paths that never
+    /// loaded a model.
     func unload() {
-        guard whisper != nil else { return }
-        whisper = nil
-        phase = .idle
-        Self.log("whisper unloaded to free memory before the Director")
+        let wasLoaded = whisperEngine.isLoaded || (parakeetEngine?.isLoaded ?? false)
+        whisperEngine.unload()
+        parakeetEngine?.unload()
+        if wasLoaded { phase = .idle }
     }
 
-    // MARK: - WhisperKit path
+    // MARK: - On-device ASR router
 
     private func transcribeOnDevice(_ videoURL: URL, languageHint: String = "") async throws -> Transcript {
         // Full audio (no cap) → temp .m4a.
@@ -178,73 +169,12 @@ final class TranscriptionService {
         }
         defer { try? FileManager.default.removeItem(at: audioURL) }
 
-        if whisper == nil {
-            phase = .downloadingModel(fraction: 0)
-            let support = WhisperKit.recommendedModels()
-            let variant = Self.preferredVariants.first { support.supported.contains($0) }
-                ?? support.default
-            Self.log("whisper variant: \(variant) (supported: \(support.supported.joined(separator: ", ")))")
-            // WhisperKit 1.0: download() returns URL directly (was a wrapper type in 0.9;
-            // folder.path below is URL.path, which compiles unchanged).
-            // progressCallback: trailing closure still matches ProgressCallback = @Sendable (Progress)->Void.
-            let folder = try await WhisperKit.download(variant: variant) { @Sendable [weak self] progress in
-                let fraction = progress.fractionCompleted
-                Task { @MainActor in
-                    self?.phase = fraction < 1.0 ? .downloadingModel(fraction: fraction) : .preparingModel
-                }
-            }
-            // Loading specialises the CoreML model for the chosen compute units.
-            // WhisperKit defaults the audio encoder to the Neural Engine, whose
-            // specialization of large-v3 is pathologically slow on an M1 Pro
-            // (~5 min). Forcing GPU skips that ANE specialization and loads +
-            // transcribes far faster, with no first-run stall.
-            phase = .preparingModel
-            Self.log("preparing/loading model \(variant) on GPU…")
-            let compute = ModelComputeOptions(
-                melCompute: .cpuAndGPU,
-                audioEncoderCompute: .cpuAndGPU,
-                textDecoderCompute: .cpuAndGPU)
-            whisper = try await WhisperKit(WhisperKitConfig(
-                modelFolder: folder.path, computeOptions: compute, load: true))
-            Self.log("model loaded")
-        }
-
-        guard let whisper else { throw TranscriptionError.modelUnavailable }
-
-        phase = .transcribing
-        // Force language detection (or the user's override) so Spanish audio
-        // isn't silently decoded as English. `language` nil + detectLanguage true
-        // makes WhisperKit pick the spoken language instead of defaulting to en.
-        var options = DecodingOptions()
-        options.task = .transcribe
-        // Ask Whisper for per-word timing so captions can highlight the spoken
-        // word. Only this on-device path pays the (small) extra cost; cue-level
-        // sources synthesize their stamps instead.
-        options.wordTimestamps = true
-        if let code = Self.languageCode(from: languageHint) {
-            options.language = code
-            options.detectLanguage = false
-            Self.log("forcing decode language: \(code)")
-        } else {
-            options.detectLanguage = true
-        }
-        let results = try await whisper.transcribe(audioPath: audioURL.path, decodeOptions: options)
-        let segments = results.flatMap(\.segments).map { seg in
-            TranscriptSegment(
-                start: Double(seg.start),
-                end: Double(seg.end),
-                text: seg.text,
-                // WhisperKit's `word` carries a leading space — trim it; drop any
-                // empties so the caption stream is clean.
-                words: (seg.words ?? []).compactMap { w in
-                    let t = w.word.trimmingCharacters(in: .whitespacesAndNewlines)
-                    return t.isEmpty ? nil : WordStamp(text: t, start: Double(w.start), end: Double(w.end))
-                })
-        }
-        guard !segments.isEmpty else { throw TranscriptionError.empty }
-        Self.log("transcribed \(segments.count) segments, language=\(results.first?.language ?? "?")")
+        let engine = whisperEngine   // routing added in a later task
+        let result = try await engine.transcribe(
+            audioURL: audioURL, languageHint: languageHint,
+            onPhase: { @MainActor [weak self] p in self?.phase = p })
         phase = .ready
-        return Transcript(segments: segments, language: results.first?.language)
+        return result
     }
 
     nonisolated static func log(_ message: String) {

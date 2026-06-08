@@ -175,6 +175,8 @@ targets:
     sources:
       - path: ShortsProbe
       - path: Clipmunk/Services/TranscriptionService.swift
+      - path: Clipmunk/Services/ASREngine.swift
+      - path: Clipmunk/Services/WhisperKitEngine.swift
       - path: Clipmunk/Services/MomentFinderService.swift
       - path: Clipmunk/Services/ChatModelProfile.swift
       - path: Clipmunk/Services/ModelCatalog.swift
