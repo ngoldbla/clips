@@ -60,4 +60,23 @@ enum ModelCatalog {
         repoID: "openai_whisper-large-v3",
         displayName: "WhisperKit · large-v3",
         estPeakRAMGB: 2.0)
+
+    /// Low-memory ASR (CoreML/ANE) via speech-swift's streaming Parakeet. Preferred
+    /// on constrained Macs for English/unset audio; any failure falls back to
+    /// `transcription` (WhisperKit). The repo id is the streaming EOU model that
+    /// `ParakeetStreamingASRModel.fromPretrained()` actually downloads.
+    static let stt = Entry(
+        role: .stt,
+        repoID: "aufklarer/Parakeet-EOU-120M-CoreML-INT8",
+        displayName: "Parakeet",
+        estPeakRAMGB: 0.6)
+
+    /// Faceless-narration TTS (CoreML/ANE) via speech-swift's Kokoro-82M.
+    /// Synthesizes the clip's script; the picker enumerates installed voices at
+    /// runtime from the model bundle's `voices/*.json`.
+    static let tts = Entry(
+        role: .tts,
+        repoID: "aufklarer/Kokoro-82M-CoreML",
+        displayName: "Kokoro-82M",
+        estPeakRAMGB: 0.2)
 }

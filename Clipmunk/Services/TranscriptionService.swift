@@ -166,6 +166,28 @@ final class TranscriptionService {
         }
         defer { try? FileManager.default.removeItem(at: audioURL) }
 
+        #if DEBUG
+        // Developer A/B override (probes): force one engine regardless of routing.
+        // CLIPMUNK_STT=parakeet|whisperkit. Skips the fallback so a forced run
+        // measures exactly the engine asked for.
+        if let forced = ProcessInfo.processInfo.environment["CLIPMUNK_STT"] {
+            if forced == "whisperkit" {
+                let result = try await whisperEngine.transcribe(
+                    audioURL: audioURL, languageHint: languageHint,
+                    onPhase: { @MainActor [weak self] p in self?.phase = p })
+                phase = .ready
+                return result
+            }
+            if forced == "parakeet", let parakeet = parakeetEngine {
+                let result = try await parakeet.transcribe(
+                    audioURL: audioURL, languageHint: languageHint,
+                    onPhase: { @MainActor [weak self] p in self?.phase = p })
+                phase = .ready
+                return result
+            }
+        }
+        #endif
+
         // Parakeet when RAM is tight AND the language is English/unset; otherwise
         // WhisperKit (non-English, or 24 GB+ where accuracy is free).
         let hint = TranscriptionService.languageCode(from: languageHint)

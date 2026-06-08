@@ -63,7 +63,7 @@ do {
     let transcript = try await transcription.transcript(for: videoURL, languageHint: "English")
     let words = transcript.segments.reduce(0) { $0 + $1.words.count }
     note("transcript: \(transcript.segments.count) segments, \(words) word-stamps, lang=\(transcript.language ?? "?") in \(elapsed(t0))")
-    if MemoryPolicy.shouldFreeWhisperAfterTranscribe { transcription.unload() }
+    if MemoryPolicy.shouldFreeASRAfterTranscribe { transcription.unload() }
     MemoryPolicy.releaseCaches()
 
     // 2. Director (Gemma 4 E2B): moments + inline 3-platform captions.

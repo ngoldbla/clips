@@ -93,6 +93,17 @@ final class AppSettings {
         return visionAwareMomentFinding
     }
 
+    /// Default for replacing each short's audio with a synthesized voiceover
+    /// ("faceless" mode). OFF by default — opt-in, per-clip overridable.
+    var ttsEnabled: Bool {
+        didSet { defaults.set(ttsEnabled, forKey: Keys.tts) }
+    }
+
+    /// Kokoro voice id used for narration (e.g. "af_heart").
+    var ttsVoiceID: String {
+        didSet { defaults.set(ttsVoiceID, forKey: Keys.ttsVoice) }
+    }
+
     private let defaults: UserDefaults
 
     init(defaults: UserDefaults = .standard) {
@@ -127,6 +138,9 @@ final class AppSettings {
         self.youTubeIngestEnabled = defaults.object(forKey: Keys.youtube) as? Bool ?? false
         // Off by default — opt-in vision pass (adds time + a ~2.5 GB model).
         self.visionAwareMomentFinding = defaults.object(forKey: Keys.vision) as? Bool ?? false
+        // Off by default — opt-in faceless voiceover (replaces clip audio).
+        self.ttsEnabled = defaults.object(forKey: Keys.tts) as? Bool ?? false
+        self.ttsVoiceID = defaults.string(forKey: Keys.ttsVoice) ?? VoiceCatalog.defaultVoiceID
     }
 
     /// True once the app has enough to publish.
@@ -154,6 +168,8 @@ final class AppSettings {
         static let captionStyle = "clipmunk.captionStyleID"
         static let youtube     = "clipmunk.youTubeIngestEnabled"
         static let vision      = "clipmunk.visionAwareMomentFinding"
+        static let tts         = "clipmunk.ttsEnabled"
+        static let ttsVoice    = "clipmunk.ttsVoiceID"
         static let apiKey      = "clipmunk.apiKey"
         /// Old Keychain account, read once to migrate into UserDefaults.
         static let legacyApiKey = "upload-post-api-key"

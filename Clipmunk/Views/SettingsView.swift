@@ -74,7 +74,9 @@ struct SettingsView: View {
                 pipelineRole(
                     step: "1", icon: "waveform",
                     title: "Transcribe",
-                    model: ModelCatalog.transcription.displayName,
+                    model: MemoryPolicy.isConstrained
+                        ? "\(ModelCatalog.stt.displayName) · \(ModelCatalog.transcription.displayName) fallback"
+                        : ModelCatalog.transcription.displayName,
                     detail: "Turns the audio into text. Runs only when the video has no .srt/.vtt next to it.",
                     status: nil)
                 pipelineRole(
@@ -117,6 +119,27 @@ struct SettingsView: View {
                 Text("Tracks the speaker with on-device Vision and reframes 16:9 → 9:16, falling back to a blurred background when there's no clear face. The default for new horizontal clips — you can flip it per clip. Applied when you publish.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+
+            Section("Faceless voiceover (opt-in)") {
+                Toggle("Replace each short's audio with an AI voiceover", isOn: $settings.ttsEnabled)
+                if settings.ttsEnabled {
+                    let voices = VoiceCatalog.installed()
+                    Picker("Voice", selection: $settings.ttsVoiceID) {
+                        if voices.isEmpty {
+                            Text(VoiceCatalog.makeVoice(VoiceCatalog.defaultVoiceID).displayName)
+                                .tag(VoiceCatalog.defaultVoiceID)
+                        } else {
+                            ForEach(voices) { v in Text(v.displayName).tag(v.id) }
+                        }
+                    }
+                    if voices.isEmpty {
+                        Text("More voices appear here after the \(ModelCatalog.tts.displayName) model downloads on first use.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                Text("Reads the short's script with \(ModelCatalog.tts.displayName) and replaces the clip's audio, re-syncing captions — turns a cut into a clean faceless/B-roll short. Off by default; flip per clip.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
 
             Section("YouTube links (opt-in)") {

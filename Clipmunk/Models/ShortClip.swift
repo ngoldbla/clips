@@ -51,6 +51,11 @@ final class ShortClip: Identifiable {
     /// Per-clip caption look.
     var captionStyle: CaptionStyle
 
+    /// Per-clip switch for replacing the audio with a synthesized voiceover.
+    var narrationEnabled: Bool
+    /// Which Kokoro voice to narrate with (id like "af_heart").
+    var narrationVoiceID: String
+
     // Per-clip publish state.
     private(set) var isPublishing = false
     private(set) var publishReport: UploadPostClient.PublishReport?
@@ -61,7 +66,8 @@ final class ShortClip: Identifiable {
     init(candidate: ClipCandidate, transcriptSlice: String,
          wordStamps: [WordStamp] = [],
          overlayEnabled: Bool, reframeEnabled: Bool,
-         captionsEnabled: Bool = true, captionStyle: CaptionStyle = .default) {
+         captionsEnabled: Bool = true, captionStyle: CaptionStyle = .default,
+         narrationEnabled: Bool = false, narrationVoiceID: String = VoiceCatalog.defaultVoiceID) {
         self.candidate = candidate
         self.transcriptSlice = transcriptSlice
         // Build the caption script once, in source→clip-relative time, from the
@@ -75,6 +81,8 @@ final class ShortClip: Identifiable {
         self.reframeEnabled = reframeEnabled
         self.captionsEnabled = captionsEnabled
         self.captionStyle = captionStyle
+        self.narrationEnabled = narrationEnabled
+        self.narrationVoiceID = narrationVoiceID
     }
 
     /// Rebuilds a clip from a persisted library entry, pointing at the copied cut
@@ -89,11 +97,24 @@ final class ShortClip: Identifiable {
         self.reframeEnabled = stored.reframeEnabled
         self.captionsEnabled = stored.captionsEnabled
         self.captionStyle = CaptionStyle.preset(id: stored.captionStyleID)
+        self.narrationEnabled = stored.narrationEnabled
+        self.narrationVoiceID = stored.narrationVoiceID
         self.isLandscape = stored.isLandscape
         self.variants = stored.variants
         self.detectedLanguage = stored.detectedLanguage
         self.clipJob = VideoJob(url: clipURL, durationSeconds: stored.durationSeconds)
         self.stage = .ready
+    }
+
+    // ── DECISION (§7 source text): what the synthesized voice reads. ───────────
+    // Faceless narration replaces the talking-head audio, so it should read the
+    // Director's *script*, not echo the original speech. Default: the primary
+    // platform caption body (PostVariant.summary), then the candidate hook, then
+    // the transcript slice as a last resort. Kept short to stay near clip length.
+    var narrationText: String {
+        if let body = variants.first(where: { !$0.summary.trimmed.isEmpty })?.summary { return body }
+        if !candidate.hook.trimmed.isEmpty { return candidate.hook }
+        return transcriptSlice
     }
 
     /// A persistable snapshot of this clip for the job library. `clipFile` keys
@@ -105,7 +126,9 @@ final class ShortClip: Identifiable {
             detectedLanguage: detectedLanguage, overlayText: overlayText,
             overlayEnabled: overlayEnabled, reframeEnabled: reframeEnabled,
             isLandscape: isLandscape, captionsEnabled: captionsEnabled,
-            captionStyleID: captionStyle.id, clipFile: "\(id.uuidString).mp4",
+            captionStyleID: captionStyle.id,
+            narrationEnabled: narrationEnabled, narrationVoiceID: narrationVoiceID,
+            clipFile: "\(id.uuidString).mp4",
             durationSeconds: clipJob?.durationSeconds ?? candidate.duration)
     }
 
@@ -120,7 +143,7 @@ final class ShortClip: Identifiable {
         let wantReframe = reframeEnabled && isLandscape
         let wantOverlay = overlayEnabled && !overlayText.trimmed.isEmpty
         let wantCaptions = captionsEnabled && !captionScript.isEmpty
-        return wantReframe || wantOverlay || wantCaptions
+        return wantReframe || wantOverlay || wantCaptions || narrationEnabled
     }
 
     /// Builds the file to upload or download: applies the vertical reframe and/or
@@ -132,16 +155,60 @@ final class ShortClip: Identifiable {
         let wantReframe = reframeEnabled && isLandscape
         let wantOverlay = overlayEnabled && !hook.isEmpty
         let wantCaptions = captionsEnabled && !captionScript.isEmpty
-        if wantReframe || wantOverlay || wantCaptions,
+
+        // Narration pre-stage: synthesize the script, swap it onto the clip, and
+        // re-sync captions proportionally over the narration length. Any failure
+        // falls through to today's path (original audio + transcript-timed captions).
+        var sourceURL = clipJob.url
+        var narratedTemp: URL?
+        // The narrated temp is owned here until it's either consumed by the
+        // reframe pass or returned as the final file. Delete it on every other
+        // exit — including a throw from VerticalReframer — so it's never orphaned.
+        var keepNarratedTemp = false
+        defer {
+            if let narratedTemp, !keepNarratedTemp { try? FileManager.default.removeItem(at: narratedTemp) }
+        }
+        var renderCaptions: CaptionScript? = wantCaptions ? captionScript : nil
+        if narrationEnabled, !narrationText.trimmed.isEmpty {
+            do {
+                let samples = try await NarrationService.shared.synthesize(
+                    text: narrationText, voiceID: narrationVoiceID)
+                let narrated = try await NarrationComposer.narratedClip(
+                    clipURL: clipJob.url, samples: samples, sampleRate: NarrationService.sampleRate)
+                sourceURL = narrated.url
+                narratedTemp = narrated.url
+                if wantCaptions {
+                    let words = Transcript.synthesizeWords(
+                        text: narrationText, start: 0, end: narrated.narrationLen)
+                    renderCaptions = CaptionScript.build(words: words, clipStart: 0, clipEnd: narrated.narrationLen)
+                }
+            } catch {
+                ShortClip.log("narration failed (\(error)) — rendering with original audio")
+            }
+        }
+
+        // Existing render pipeline runs on `sourceURL` (narrated clip when on).
+        // A throw here is covered by the defer above (narratedTemp is cleaned up).
+        if wantReframe || wantOverlay || (renderCaptions?.isEmpty == false),
            let url = try await VerticalReframer.process(
-                clipURL: clipJob.url,
+                clipURL: sourceURL,
                 reframe: wantReframe,
                 overlayText: wantOverlay ? hook : nil,
-                captionScript: wantCaptions ? captionScript : nil,
+                captionScript: (renderCaptions?.isEmpty == false) ? renderCaptions : nil,
                 captionStyle: captionStyle) {
-            return (url, true)
+            return (url, true)   // narratedTemp consumed into `url`; defer deletes it
+        }
+
+        // Nothing to burn. If we narrated, the narrated clip IS the output.
+        if let narratedTemp {
+            keepNarratedTemp = true
+            return (narratedTemp, true)
         }
         return (clipJob.url, false)
+    }
+
+    nonisolated static func log(_ message: String) {
+        FileHandle.standardError.write(Data("[clipmunk/narration] \(message)\n".utf8))
     }
 
     // MARK: - Publishing
