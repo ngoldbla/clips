@@ -64,7 +64,7 @@ final class MomentFinderService {
         phase = .downloading(fraction: 0)
 
         do {
-            let downloader = #hubDownloader()
+            let downloader = ClipmunkModelDownloader()
             let localDir = try await downloader.download(
                 id: Self.effectiveModelID(profile.modelID),
                 revision: nil,
@@ -122,13 +122,27 @@ final class MomentFinderService {
             || s.contains("safetensors") || s.contains("unexpected end")
     }
 
-    /// Removes a model's HuggingFace hub cache directory so the next attempt
-    /// re-downloads it from scratch instead of choking on the same broken file.
+    /// Removes a model's cached files so the next attempt re-downloads from scratch
+    /// instead of choking on the same broken file. Clears the app's model cache
+    /// (`~/Library/Caches/models/{org}/{model}`, where `ClipmunkModelDownloader`
+    /// writes — including any `.part`) and, for good measure, the legacy
+    /// HuggingFace hub cache the old downloader used.
     nonisolated static func purgeModelCache(_ modelID: String) {
+        let fm = FileManager.default
+
+        // App cache (current downloader).
+        var appDir = fm.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("models", isDirectory: true)
+        for part in modelID.split(separator: "/") {
+            appDir = appDir.appendingPathComponent(String(part))
+        }
+        try? fm.removeItem(at: appDir)
+
+        // Legacy HuggingFace hub cache (pre-ClipmunkModelDownloader).
         let dir = "models--" + modelID.replacingOccurrences(of: "/", with: "--")
         let base = ProcessInfo.processInfo.environment["HF_HOME"].map { URL(fileURLWithPath: $0) }
-            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".cache/huggingface")
-        try? FileManager.default.removeItem(at: base.appendingPathComponent("hub").appendingPathComponent(dir))
+            ?? fm.homeDirectoryForCurrentUser.appendingPathComponent(".cache/huggingface")
+        try? fm.removeItem(at: base.appendingPathComponent("hub").appendingPathComponent(dir))
     }
 
     /// Frees the loaded model and its Metal cache. Used by ModelManager to make

@@ -88,7 +88,7 @@ final class VisualMapper {
         guard container == nil, !isBusy else { return }
         phase = .downloading(fraction: 0)
         do {
-            let downloader = #hubDownloader()
+            let downloader = ClipmunkModelDownloader()
             let localDir = try await downloader.download(
                 id: Self.effectiveModelID,
                 revision: nil,
