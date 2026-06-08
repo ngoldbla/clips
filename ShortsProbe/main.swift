@@ -17,6 +17,21 @@ func slug(_ s: String) -> String {
     return String((base.isEmpty ? "clip" : base).prefix(32))
 }
 
+// TEMP self-test for AudioResampler (Task 4.1). Run: shorts-probe --selftest-resampler <anyAudioOrVideo>
+if CommandLine.arguments.contains("--selftest-resampler") {
+    guard let path = CommandLine.arguments.dropFirst().first(where: { !$0.hasPrefix("--") }) else {
+        print("usage: shorts-probe --selftest-resampler <audio-or-video>"); exit(1)
+    }
+    do {
+        let samples = try AudioResampler.pcm16kMono(from: URL(fileURLWithPath: path))
+        let seconds = Double(samples.count) / 16000.0
+        precondition(!samples.isEmpty, "resampler returned no samples")
+        precondition(seconds > 0.1, "resampler produced < 0.1s of audio")
+        print("RESAMPLER_OK samples=\(samples.count) seconds=\(String(format: "%.2f", seconds))")
+        exit(0)
+    } catch { print("RESAMPLER_FAILED \(error)"); exit(1) }
+}
+
 let args = CommandLine.arguments
 guard args.count > 1 else { print("usage: shorts-probe <video> [outDir] [maxClips]"); exit(1) }
 let videoURL = URL(fileURLWithPath: args[1])
