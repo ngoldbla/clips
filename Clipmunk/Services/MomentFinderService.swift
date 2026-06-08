@@ -8,13 +8,13 @@ import MLXVLM
 import Observation
 import Tokenizers
 
-/// The "Director": owns the Qwen 3.5 9B text model and turns a full transcript
-/// into a ranked list of viral clip candidates in one pass.
+/// The "Director": owns the Gemma 4 E2B text model and turns a full transcript
+/// into a ranked list of viral clip candidates — writing each clip's captions in
+/// the same pass.
 ///
-/// Adapted from Hermes-Jarvis' MLXChatService, stripped of skills/tools, draft
-/// models and speculative decoding — this is single-shot structured generation.
-/// Qwen 3.5 9B's huge context window swallows an hour-long transcript at once,
-/// so there is no chunking. Thinking is forced OFF.
+/// Single-shot structured generation (no skills/tools, draft models or
+/// speculative decoding). E2B's 128K context swallows an hour-long transcript at
+/// once, so there is no chunking. Thinking is forced OFF.
 @MainActor
 @Observable
 final class MomentFinderService {
@@ -30,9 +30,9 @@ final class MomentFinderService {
     private(set) var phase: Phase = .idle
     private var container: ModelContainer?
 
-    /// Which model plays the Director. Defaults to Gemma 4 12B; switched to match
-    /// the user's pick via `setProfile(_:)` before the model loads.
-    private(set) var profile = ChatModelProfile.gemma12B
+    /// Which model plays the Director. There's a single option now (Gemma 4 E2B);
+    /// the field stays so the load/switch plumbing is unchanged.
+    private(set) var profile = ChatModelProfile.director
 
     var isReady: Bool { container != nil }
     var isBusy: Bool {

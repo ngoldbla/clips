@@ -1,8 +1,8 @@
 import Foundation
 
-/// Per-model decoding configuration for the MLX text models Clipmunk loads
-/// directly (currently just Qwen 3.5 9B, the "Director" that finds viral
-/// moments). Adapted from Hermes-Jarvis, trimmed to what Clipmunk needs.
+/// Per-model decoding configuration for the MLX text model Clipmunk loads as the
+/// "Director" (Gemma 4 E2B — finds viral moments and writes captions in one pass).
+/// Trimmed to what Clipmunk needs.
 ///
 /// MLX `GenerateParameters` defaults are generic; each model family has its
 /// own vendor-recommended sampling that materially affects quality and memory.
@@ -49,59 +49,25 @@ struct ChatModelProfile: Sendable {
     /// Vendor-recommended decoding parameters.
     let sampling: SamplingConfig
 
-    /// Qwen 3.5 9B — best multilingual reasoning in the small-model tier, huge
-    /// context window (the whole transcript fits in one pass). Loads as a VLM.
-    static let qwen35_9b = ChatModelProfile(
-        modelID: "mlx-community/Qwen3.5-9B-MLX-4bit",
-        displayName: "Qwen 3.5 9B",
-        factoryKind: .vlm,
-        loader: .vlm,
-        // Qwen3 non-thinking recommended sampling (temp 0.7 / topP 0.8 / topK 20).
-        // Thinking is forced OFF via additionalContext, so these are correct.
-        // maxTokens bumped from Hermes' 1536 → 4096: the clips JSON for a long
-        // video can be long and must not truncate. KV bounded + 8-bit to cap
-        // memory while still fitting a ~30k-token transcript prefill.
-        sampling: SamplingConfig(
-            temperature: 0.7, topP: 0.8, topK: 20, minP: 0,
-            repetitionPenalty: nil, maxTokens: 4096,
-            // KV bounded for very long transcripts, 8-bit. (Proven reliable; 4-bit
-            // on the rotating cache threw KVCacheError for no measured memory gain.)
-            maxKVSize: 40960, kvBits: 8))
-
-    /// Qwen 3.5 4B — same family/loader as the 9B, but ~3 GB on disk and ~8 GB
-    /// peak (vs the 9B's ~10.7 GB), and ~44% faster prefill. In head-to-head
-    /// judging it matched-or-beat the 9B on hooks, captions, moment selection and
-    /// format compliance — so it's the default on 16 GB Macs: smaller, faster, and
-    /// no quality cost. Same sampling as the 9B (proven to yield valid JSON).
-    static let qwen35_4b = ChatModelProfile(
-        modelID: "mlx-community/Qwen3.5-4B-MLX-4bit",
-        displayName: "Qwen 3.5 4B",
-        factoryKind: .vlm,
-        loader: .vlm,
-        sampling: SamplingConfig(
-            temperature: 0.7, topP: 0.8, topK: 20, minP: 0,
-            repetitionPenalty: nil, maxTokens: 4096,
-            maxKVSize: 40960, kvBits: 8))
-
-    /// Gemma 4 12B — Google's new dense 12B (text+vision). We feed it the
-    /// transcript text only, so it runs as a text LLM through the same
-    /// `ChatSession` path as Qwen, via the vendored Gemma4Swift registration.
-    /// The default Director: stronger writing than Qwen at a similar footprint.
-    static let gemma12B = ChatModelProfile(
-        modelID: "mlx-community/gemma-4-12B-it-4bit",
-        displayName: "Gemma 4 12B",
+    /// Gemma 4 E2B — the sole Director. A ~2.3B-effective gemma4-family model fed
+    /// the transcript text only, so it runs as a text LLM through the vendored
+    /// Gemma4Swift `.gemma4Text` registration (the same path the old 12B used).
+    /// 128K context, so a full long-video transcript still fits in one pass —
+    /// finds the moments AND writes each clip's captions inline.
+    ///
+    /// Repo id + display name come from `ModelCatalog.director` so the name shown
+    /// in the UI can never drift from what loads.
+    static let director = ChatModelProfile(
+        modelID: ModelCatalog.director.repoID,
+        displayName: ModelCatalog.director.displayName,
         factoryKind: .llm,
         loader: .gemma4Text,
-        // Moderate temperature + a repetition penalty. We need strict JSON, but
-        // the two failure modes pull opposite ways: too high (≥0.6) and the
-        // manual fp32 attention's slight logit perturbation mis-samples a
-        // structural token and breaks the JSON; too low (≤0.2) and it falls into
-        // a repetition loop (e.g. spamming the same hashtags) that eats the whole
-        // token budget. 0.35 sits between them, and repetitionPenalty kills the
-        // loops directly. KV cache is unquantized (kvBits nil): the 12B's
-        // full-attention layers use a 512 head dim that overflows the
-        // fused/quantized SDPA Metal kernel, so we fall back to a manual
-        // matmul+softmax attention on a plain cache.
+        // Moderate temperature + a repetition penalty: we need strict JSON, and a
+        // small model drifts both ways — too hot mis-samples a structural token
+        // and breaks the JSON, too cold falls into a repetition loop that eats the
+        // token budget. 0.35 sits between, and repetitionPenalty kills the loops.
+        // KV left unquantized (kvBits nil) — simplest, and E2B's footprint is tiny
+        // even with a full-precision cache over a transcript.
         sampling: SamplingConfig(
             temperature: 0.35, topP: 0.9, topK: 30, minP: 0,
             repetitionPenalty: 1.1, maxTokens: 4096,
