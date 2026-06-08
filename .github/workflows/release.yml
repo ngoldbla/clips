@@ -14,6 +14,10 @@ permissions:
 jobs:
   build-dmg:
     runs-on: macos-26
+    # Hard ceiling so a stalled Apple Notary service can never burn the full
+    # 6-hour default again. A normal run (build + 2 notarizations) is well under
+    # this; notarize.sh adds its own per-attempt --timeout + retries underneath.
+    timeout-minutes: 120
     env:
       APP_NAME: Clipmunk
       SCHEME: Clipmunk
@@ -74,17 +78,13 @@ jobs:
         run: |
           set -euo pipefail
           APP="build/Build/Products/Release/$APP_NAME.app"
-          printf '%s' "$NOTARY_KEY_P8" > "$RUNNER_TEMP/key.p8"
           ditto -c -k --keepParent "$APP" "$RUNNER_TEMP/$APP_NAME.zip"
-          xcrun notarytool submit "$RUNNER_TEMP/$APP_NAME.zip" \
-            --key "$RUNNER_TEMP/key.p8" --key-id "$NOTARY_KEY_ID" \
-            --issuer "$NOTARY_ISSUER_ID" --wait
+          # Robust: per-attempt --timeout + retries (see scripts/notarize.sh) so an
+          # Apple Notary stall fails fast and resubmits instead of hanging the job.
+          bash scripts/notarize.sh "$RUNNER_TEMP/$APP_NAME.zip"
           xcrun stapler staple "$APP"
 
-      - name: Build, sign, notarize, and staple the DMG
-        env:
-          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
-          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+      - name: Build and sign the DMG
         run: |
           set -euo pipefail
           APP="build/Build/Products/Release/$APP_NAME.app"
@@ -98,9 +98,15 @@ jobs:
           done
           test -f "dist/$APP_NAME.dmg"
           codesign --force --sign "Developer ID Application" --timestamp "dist/$APP_NAME.dmg"
-          xcrun notarytool submit "dist/$APP_NAME.dmg" \
-            --key "$RUNNER_TEMP/key.p8" --key-id "$NOTARY_KEY_ID" \
-            --issuer "$NOTARY_ISSUER_ID" --wait
+
+      - name: Notarize and staple the DMG
+        env:
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          bash scripts/notarize.sh "dist/$APP_NAME.dmg"
           xcrun stapler staple "dist/$APP_NAME.dmg"
 
       - name: Verify notarization
@@ -109,10 +115,12 @@ jobs:
           xcrun stapler validate "dist/$APP_NAME.dmg"
 
       - name: Upload DMG artifact (always)
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: Clipmunk-dmg
           path: dist/Clipmunk.dmg
+          if-no-files-found: ignore
 
       - name: Publish the signed DMG as a GitHub Release
         # Every v* tag publishes a Release with the notarized DMG attached.

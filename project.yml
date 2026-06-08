@@ -137,6 +137,7 @@ targets:
     sources:
       - path: DirectorProbe
       - path: Clipmunk/Services/MomentFinderService.swift
+      - path: Clipmunk/Services/ClipmunkModelDownloader.swift
       - path: Clipmunk/Services/ChatModelProfile.swift
       - path: Clipmunk/Services/ModelCatalog.swift
       - path: Clipmunk/Services/MemoryPolicy.swift
@@ -178,6 +179,7 @@ targets:
       - path: Clipmunk/Services/ASREngine.swift
       - path: Clipmunk/Services/WhisperKitEngine.swift
       - path: Clipmunk/Services/MomentFinderService.swift
+      - path: Clipmunk/Services/ClipmunkModelDownloader.swift
       - path: Clipmunk/Services/ChatModelProfile.swift
       - path: Clipmunk/Services/ModelCatalog.swift
       - path: Clipmunk/Services/MemoryPolicy.swift
@@ -238,6 +240,7 @@ targets:
       - path: Clipmunk/Services/ParakeetEngine.swift
       - path: Clipmunk/Services/AudioResampler.swift
       - path: Clipmunk/Services/MomentFinderService.swift
+      - path: Clipmunk/Services/ClipmunkModelDownloader.swift
       - path: Clipmunk/Services/ChatModelProfile.swift
       - path: Clipmunk/Services/ModelCatalog.swift
       - path: Clipmunk/Services/MemoryPolicy.swift
