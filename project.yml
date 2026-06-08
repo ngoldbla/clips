@@ -86,6 +86,33 @@ targets:
           CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
           OTHER_CODE_SIGN_FLAGS: "--timestamp"
 
+  # Developer-only probe for the Marlin-2B video VLM (vision-aware moment-finder).
+  # Loads Marlin (model_type qwen3_5 + Qwen3VLProcessor) via the *existing*
+  # VLMModelFactory and runs its caption/find modes on a (optionally sub-ranged)
+  # video. Used to validate loadability + timestamp fidelity before integration.
+  marlin-probe:
+    type: tool
+    platform: macOS
+    sources:
+      - path: MarlinProbe
+    dependencies:
+      - package: mlx-swift-lm
+        product: MLXVLM
+      - package: mlx-swift-lm
+        product: MLXLMCommon
+      - package: mlx-swift-lm
+        product: MLXHuggingFace
+      - package: swift-huggingface
+        product: HuggingFace
+      - package: swift-transformers
+        product: Tokenizers
+    settings:
+      base:
+        PRODUCT_NAME: marlin-probe
+        SWIFT_VERSION: "6.0"
+        MACOSX_DEPLOYMENT_TARGET: "15.0"
+        GENERATE_INFOPLIST_FILE: YES
+
   # Developer-only command-line probe. Runs the real generation path
   # (MediaExtractor → Gemma4Engine → JSONVariantParser) headlessly.
   clipmunk-probe:

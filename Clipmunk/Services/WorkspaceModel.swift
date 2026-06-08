@@ -262,6 +262,47 @@ final class WorkspaceModel {
             modelManager.freeCopywriterIfMemoryTight()
             MemoryPolicy.releaseCaches()
 
+            // 1.5 Vision pass (optional): Marlin-2B watches the footage and hands
+            //     the Director a timestamped "what's on screen, when" track merged
+            //     into the transcript — so the moment-finder sees B-roll, on-screen
+            //     text and scene changes the words alone don't reveal. Runs before
+            //     the Director and is freed right after, so on a 16 GB Mac only one
+            //     large model is resident at a time. Falls back to the plain
+            //     transcript on any failure (never blocks the pipeline).
+            var directorTranscript = transcript.srtLike()
+            if settings.effectiveVisionPass {
+                // Surface progress as "finding moments" — the vision pass is the
+                // first half of choosing them (watching, then selecting).
+                phase = .findingMoments
+                let tv = Date()
+                Self.log("vision pass: watching footage with Marlin-2B…")
+                await modelManager.prepareVisualMapperIfNeeded()
+                do {
+                    let timeline = try await modelManager.visualMapper.mapVideo(url: newJob.url)
+                    if !timeline.isEmpty {
+                        directorTranscript = transcript.augmented(with: timeline)
+                        Self.log("vision pass: \(timeline.windows.count) window(s), \(timeline.allEvents.count) event(s) in \(Self.elapsed(since: tv)) — \(MemoryPolicy.snapshot())")
+                        #if DEBUG
+                        // Dump the exact "what's on screen, when" track fed to the
+                        // Director — the tangible perception artifact for validation.
+                        if let dump = ProcessInfo.processInfo.environment["CLIPMUNK_VISION_DUMP"] {
+                            try? directorTranscript.write(toFile: dump, atomically: true, encoding: .utf8)
+                            Self.log("vision pass: augmented transcript written to \(dump)")
+                        }
+                        #endif
+                    } else {
+                        Self.log("vision pass: no usable visual signal — using transcript only")
+                    }
+                } catch is CancellationError {
+                    modelManager.freeVisualMapper()
+                    throw CancellationError()
+                } catch {
+                    Self.log("vision pass FAILED (\(error)) — falling back to transcript only")
+                }
+                modelManager.freeVisualMapper()
+                try Task.checkCancellation()
+            }
+
             // Freeze the model choice for the whole run. Reading it once makes the
             // pipeline's memory plan (which model to load/free/when) immutable, so a
             // mid-run change in Settings can't strand a stage on a model that was
@@ -281,7 +322,7 @@ final class WorkspaceModel {
             // detected spoken language.
             let outputLanguage = effectiveLanguage(settings, captionLanguage)
             let candidates = try await modelManager.momentFinder.findMoments(
-                transcript: transcript.srtLike(),
+                transcript: directorTranscript,
                 includeCaptions: useInlineCaptions,
                 language: outputLanguage,
                 styleExamples: settings.styleExamples)
