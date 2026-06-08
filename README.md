@@ -94,11 +94,14 @@ Concretely:
    Macs for English, falling back to **WhisperKit** (`large-v3`) for non-English or when
    there's RAM headroom. The transcript's language is detected from the *text*
    (NaturalLanguage), so captions stay in the spoken language.
-2. **Find the moments + write the copy.** The **Director** — an on-device LLM — reads the
-   whole transcript and returns a single JSON: the best clips (start/end, why, hook, a
-   short on-screen overlay) **and** the full TikTok / Instagram / YouTube caption package
-   for each, in one pass. A tolerant parser strips fences/thinking and validates clip
-   durations.
+2. **Watch, then find the moments + write the copy.** First the **Marlin-2B** vision model
+   watches the footage and hands the Director a timestamped "what's on screen, when" track
+   (B-roll, on-screen text, scene changes the words alone don't reveal) — this perception
+   pass is core to picking good moments, so it always runs. Then the **Director** — an
+   on-device LLM — reads that vision-augmented transcript and returns a single JSON: the
+   best clips (start/end, why, hook, a short on-screen overlay) **and** the full TikTok /
+   Instagram / YouTube caption package for each, in one pass. A tolerant parser strips
+   fences/thinking and validates clip durations.
 3. **Cut.** AVFoundation cuts each moment to its own file.
 4. **Reframe (optional, automatic for horizontal clips).** Vision samples faces across
    the clip; if the speaker is found, an `AVMutableVideoComposition` pans a 9:16 crop to
@@ -117,7 +120,7 @@ every platform's captions in the same pass:
 
 | Model | Role | Notes |
 |-------|------|-------|
-| **Gemma 4 E2B** | Director + inline captions | A ~2.3 B-effective gemma-4 model, ~1 GB on disk. 128 K context, so a full long-video transcript fits in one pass. Runs comfortably on 16 GB with room for the optional vision pass. |
+| **Gemma 4 E2B** | Director + inline captions | A ~2.3 B-effective gemma-4 model, ~1 GB on disk. 128 K context, so a full long-video transcript fits in one pass. Runs comfortably on 16 GB alongside the Marlin-2B vision pass (loaded one model at a time). |
 
 It downloads once on first use, then everything runs offline. No model picker, no
 per-machine split — the same lean model runs everywhere.
@@ -125,11 +128,11 @@ per-machine split — the same lean model runs everywhere.
 ## Requirements
 
 - **Apple Silicon** Mac (M1 or later), **macOS 15+**.
-- **Memory:** **16 GB RAM minimum**. The Director (Gemma 4 E2B) and the optional Marlin-2B
-  vision pass load one-at-a-time, so nothing swaps on 16 GB.
+- **Memory:** **16 GB RAM minimum**. The Director (Gemma 4 E2B) and the Marlin-2B vision
+  pass (which always runs) load one-at-a-time, so nothing swaps on 16 GB.
 - **Disk:** ~**6 GB free** for the on-device models downloaded on first run
   (Gemma 4 E2B ≈ 3.6 GB; the lean Parakeet STT ≈ 0.6 GB, or WhisperKit large-v3 ≈ 1.5 GB),
-  plus the optional Marlin-2B vision model (~2.5 GB) and Kokoro voiceover (~0.3 GB) when used,
+  plus the Marlin-2B vision model (~2.5 GB, always used) and the optional Kokoro voiceover (~0.3 GB),
   and working space for the videos you process. Models download once from Hugging Face, then
   run offline.
 
@@ -145,8 +148,9 @@ so it opens normally — no Gatekeeper warnings and no Terminal workaround neede
 ### First run
 
 - Clipmunk downloads the models it needs on first use, with a visible progress bar:
-  the **Director** (Gemma 4 E2B ≈ 3.6 GB) and **WhisperKit large-v3** for transcription.
-  Happens once, then it works offline.
+  the **Director** (Gemma 4 E2B ≈ 3.6 GB), the **Marlin-2B** vision model (≈ 2.5 GB, used
+  for the always-on perception pass) and the transcription model (Parakeet ≈ 0.6 GB, or
+  **WhisperKit large-v3** for non-English). Happens once, then it works offline.
 - Open **Settings** (⌘,) and add your [Upload-Post](https://upload-post.com) **API key**
   and **profile name** (the one from *Manage Users*, not your social handle).
 - Optionally set a caption language and paste a few of your own captions as style
@@ -199,7 +203,7 @@ Pre-release tags (e.g. `v0.1.0-rc1`) publish as GitHub **pre-releases**; final
 | UI               | SwiftUI · AVKit                                                       |
 | Transcription    | [Parakeet](https://github.com/soniqo/speech-swift) (CoreML/ANE, default on ≤16 GB) · [WhisperKit](https://github.com/argmaxinc/WhisperKit) `large-v3` fallback + non-English |
 | Director model   | Gemma 4 E2B (4-bit), runs as a text LLM via MLX — finds moments + writes captions |
-| Vision map (opt) | Marlin-2B (8-bit) — watches the footage, hands the Director an on-screen track |
+| Vision map | Marlin-2B (8-bit) — always-on perception: watches the footage, hands the Director an on-screen track |
 | Faceless voice (opt) | Kokoro-82M (CoreML/ANE) via [speech-swift](https://github.com/soniqo/speech-swift) — swaps a clip's audio for a synth voiceover, re-syncs captions |
 | Inference        | [MLX](https://github.com/ml-explore/mlx-swift) (Metal, Neural Engine) |
 | Gemma 4 runtime  | [gemma-4-swift-mlx](https://github.com/VincentGourbin/gemma-4-swift-mlx), vendored in `Vendor/` |
