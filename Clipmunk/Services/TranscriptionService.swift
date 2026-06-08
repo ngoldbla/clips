@@ -184,6 +184,9 @@ final class TranscriptionService {
             let variant = Self.preferredVariants.first { support.supported.contains($0) }
                 ?? support.default
             Self.log("whisper variant: \(variant) (supported: \(support.supported.joined(separator: ", ")))")
+            // WhisperKit 1.0: download() returns URL directly (was a wrapper type in 0.9;
+            // folder.path below is URL.path, which compiles unchanged).
+            // progressCallback: trailing closure still matches ProgressCallback = @Sendable (Progress)->Void.
             let folder = try await WhisperKit.download(variant: variant) { @Sendable [weak self] progress in
                 let fraction = progress.fractionCompleted
                 Task { @MainActor in
