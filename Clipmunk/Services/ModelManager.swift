@@ -32,6 +32,12 @@ final class ModelManager {
     /// Loaded lazily on the first long-video drop, not at app launch.
     let momentFinder = MomentFinderService()
 
+    /// The perception layer — Marlin-2B watches the video and produces a
+    /// timestamped on-screen track for the Director. Loaded lazily, only when the
+    /// vision pass runs, and freed before the Director loads (one large model at a
+    /// time on tight RAM). ~2.5 GB resident.
+    let visualMapper = VisualMapper()
+
     // MARK: - Environment facts
 
     var systemRAMGB: Int { MemoryPolicy.systemRAMGB }
@@ -118,6 +124,21 @@ final class ModelManager {
     func freeDirectorIfMemoryTight() {
         guard MemoryPolicy.isConstrained else { return }
         momentFinder.unload()
+    }
+
+    // MARK: - Visual mapper (perception layer)
+
+    /// Loads Marlin if needed for the vision pass. Called from the shorts pipeline
+    /// before the Director, only when the vision pass is enabled.
+    func prepareVisualMapperIfNeeded() async {
+        await visualMapper.prepareIfNeeded()
+    }
+
+    /// Frees Marlin (~2.5 GB) right after the vision pass so the Director loads
+    /// into a clean memory state on a 16 GB Mac (one large model at a time).
+    func freeVisualMapper() {
+        visualMapper.unload()
+        MemoryPolicy.releaseCaches()
     }
 
     /// Frees the multimodal copywriter engine (Gemma E4B, ~5 GB) and its Metal

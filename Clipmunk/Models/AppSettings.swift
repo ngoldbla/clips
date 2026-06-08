@@ -141,6 +141,27 @@ final class AppSettings {
         didSet { defaults.set(youTubeIngestEnabled, forKey: Keys.youtube) }
     }
 
+    /// Opt-in: before the Director picks moments, have the on-device Marlin-2B
+    /// video model watch the footage and hand the Director a timestamped
+    /// "what's on screen, when" track (B-roll, on-screen text, scene changes).
+    /// The Director is otherwise blind to the video. OFF by default — it adds a
+    /// vision pass (extra time, ~2.5 GB model) before moment-finding.
+    var visionAwareMomentFinding: Bool {
+        didSet { defaults.set(visionAwareMomentFinding, forKey: Keys.vision) }
+    }
+
+    /// Whether the vision pass actually runs this session. The Settings toggle
+    /// wins, but a DEBUG env var (`CLIPMUNK_VISION_PASS=0|1`) overrides it for the
+    /// closed-loop baseline-vs-augmented A/B.
+    var effectiveVisionPass: Bool {
+        #if DEBUG
+        if let v = ProcessInfo.processInfo.environment["CLIPMUNK_VISION_PASS"] {
+            return v == "1" || v.lowercased() == "true"
+        }
+        #endif
+        return visionAwareMomentFinding
+    }
+
     private let defaults: UserDefaults
 
     init(defaults: UserDefaults = .standard) {
@@ -179,6 +200,8 @@ final class AppSettings {
         self.captionStyleID = defaults.string(forKey: Keys.captionStyle) ?? CaptionStyle.default.id
         // Off by default — opt-in network feature.
         self.youTubeIngestEnabled = defaults.object(forKey: Keys.youtube) as? Bool ?? false
+        // Off by default — opt-in vision pass (adds time + a ~2.5 GB model).
+        self.visionAwareMomentFinding = defaults.object(forKey: Keys.vision) as? Bool ?? false
     }
 
     /// True once the app has enough to publish.
@@ -206,6 +229,7 @@ final class AppSettings {
         static let burnCaptions = "clipmunk.burnCaptions"
         static let captionStyle = "clipmunk.captionStyleID"
         static let youtube     = "clipmunk.youTubeIngestEnabled"
+        static let vision      = "clipmunk.visionAwareMomentFinding"
         static let apiKey      = "clipmunk.apiKey"
         /// Old Keychain account, read once to migrate into UserDefaults.
         static let legacyApiKey = "upload-post-api-key"
