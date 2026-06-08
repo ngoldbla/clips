@@ -32,6 +32,21 @@ if CommandLine.arguments.contains("--selftest-resampler") {
     } catch { print("RESAMPLER_FAILED \(error)"); exit(1) }
 }
 
+if CommandLine.arguments.contains("--selftest-segments") {
+    let utts = ["Hello there friend", "this is a test"]
+    let segs = ParakeetSegmenter.segmentize(utterances: utts, totalDuration: 10)
+    precondition(segs.count == 2, "expected 2 segments, got \(segs.count)")
+    precondition(segs[0].start == 0, "first segment must start at 0")
+    precondition(abs(segs.last!.end - 10) < 0.001, "last segment must end at totalDuration")
+    precondition(segs[1].start >= segs[0].end - 0.001 && segs[1].start <= segs[0].end + 0.001,
+                 "segments must be contiguous")
+    precondition(segs[0].words.isEmpty, "Parakeet segments carry no word stamps (synthesized later)")
+    precondition((segs[0].end - segs[0].start) > (segs[1].end - segs[1].start),
+                 "longer utterance should get a longer span")
+    print("SEGMENTS_OK \(segs.map { String(format: "%.2f-%.2f", $0.start, $0.end) })")
+    exit(0)
+}
+
 let args = CommandLine.arguments
 guard args.count > 1 else { print("usage: shorts-probe <video> [outDir] [maxClips]"); exit(1) }
 let videoURL = URL(fileURLWithPath: args[1])

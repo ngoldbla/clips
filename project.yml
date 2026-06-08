@@ -185,6 +185,7 @@ targets:
       - path: Clipmunk/Services/JSONVariantParser.swift
       - path: Clipmunk/Services/MediaExtractor.swift
       - path: Clipmunk/Services/AudioResampler.swift
+      - path: Clipmunk/Services/ParakeetEngine.swift
       - path: Clipmunk/Services/VerticalReframer.swift
       - path: Clipmunk/Services/VideoOverlayRenderer.swift
       - path: Clipmunk/Services/CaptionRenderer.swift
