@@ -1,31 +1,45 @@
 import SwiftUI
 
-/// Shown while Gemma 4 watches and listens to the dropped video — the clip
-/// itself plays in a phone frame with a pulsing "analyzing" ring.
+/// Shown while a dropped short is transcribed and the Director (Gemma 4 E2B)
+/// writes its captions — the clip plays in a phone frame with a pulsing ring.
 struct ProcessingView: View {
 
     @Environment(WorkspaceModel.self) private var workspace
     @Environment(ModelManager.self) private var modelManager
     @State private var pulse = false
 
-    /// While the copywriter loads lazily (16 GB doesn't preload it), reflect the
-    /// download/load state; otherwise the model is running on the clip.
+    /// Reflects the two stages: transcribe the clip, then write the captions.
     private var headline: String {
-        switch modelManager.phase {
-        case .downloading: return "Downloading the captioning model…"
-        case .loading:     return "Preparing the model for your Mac…"
-        default:           return "Watching and listening to your video…"
+        switch workspace.transcription.phase {
+        case .downloadingModel: return "Downloading the transcription model…"
+        case .preparingModel:   return "Preparing the transcription model…"
+        case .transcribing:     return "Transcribing your video…"
+        case .idle, .ready, .failed:
+            switch modelManager.momentFinder.phase {
+            case .downloading: return "Downloading the captioning model…"
+            case .loading:     return "Preparing the model for your Mac…"
+            default:           return "Writing your captions…"
+            }
         }
     }
 
     private var subline: String {
-        switch modelManager.phase {
-        case .downloading(let fraction, _):
-            return "First run only — \(Int(fraction * 100))%. After this, Clipmunk never sends your videos anywhere."
-        case .loading:
-            return "First run only — optimizing for your Mac."
-        default:
-            return "Gemma 4 is running on your Mac. This usually takes 10–30 seconds."
+        switch workspace.transcription.phase {
+        case .downloadingModel(let f):
+            return "First run only — \(Int(f * 100))%. After this, Clipmunk never sends your videos anywhere."
+        case .preparingModel:
+            return "First run only — optimizing transcription for your Mac."
+        case .transcribing:
+            return "Reading what's said in your clip."
+        case .idle, .ready, .failed:
+            switch modelManager.momentFinder.phase {
+            case .downloading(let f):
+                return "First run only — downloading the model (\(Int(f * 100))%)."
+            case .loading:
+                return "First run only — optimizing for your Mac."
+            default:
+                return "Gemma 4 E2B is running on your Mac. This usually takes a few seconds."
+            }
         }
     }
 
@@ -68,14 +82,6 @@ struct ProcessingView: View {
                     .foregroundStyle(.tertiary)
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: 460)
-
-                if let job = workspace.job, job.exceedsRecommendedLength {
-                    Text("This clip is over 60s — the model hears the first 30s of audio and samples frames across the whole video.")
-                        .font(.footnote)
-                        .foregroundStyle(.orange)
-                        .multilineTextAlignment(.center)
-                        .frame(maxWidth: 460)
-                }
             }
 
             Spacer()

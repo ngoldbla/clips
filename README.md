@@ -11,7 +11,7 @@
 ![Platform](https://img.shields.io/badge/macOS-15%2B-black?logo=apple)
 ![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-required-1d1d1f)
 ![Swift 6](https://img.shields.io/badge/Swift-6.0-F05138?logo=swift&logoColor=white)
-![Model](https://img.shields.io/badge/Gemma_4_12B-on--device-4285F4)
+![Model](https://img.shields.io/badge/Gemma_4_E2B-on--device-4285F4)
 ![Whisper](https://img.shields.io/badge/WhisperKit-large--v3-00B8D9)
 
 <br />
@@ -36,9 +36,8 @@ play with sound, edit, download, publish, or **schedule one-per-day across the w
 
 ### ✏️ Caption a short
 
-Already have a short vertical clip? Drop it and Clipmunk **watches the frames and hears
-the audio** (Gemma 4 E4B, multimodal) and writes the three platform captions directly,
-rendered as editable phone-style previews.
+Already have a short vertical clip? Drop it and Clipmunk **transcribes it and writes the
+three platform captions** (Gemma 4 E2B) directly, rendered as editable phone-style previews.
 
 What's different about Clipmunk:
 
@@ -66,7 +65,7 @@ What's different about Clipmunk:
   │        ▼                                                              │
   │  ┌──────────────┐   ┌────────────────────┐   ┌───────────────────┐    │
   │  │ WhisperKit   │──►│  Director LLM       │──►│ AVFoundation      │    │
-  │  │ large-v3     │   │  Qwen 9B / Gemma 12B│   │ cut each clip     │    │
+  │  │ large-v3     │   │  Gemma 4 E2B        │   │ cut each clip     │    │
   │  │ transcribe   │   │  finds moments +    │   │ + reframe 9:16    │    │
   │  │ (GPU)        │   │  writes 3 captions  │   │  (Vision tracking)│    │
   │  └──────────────┘   │  in ONE pass        │   │ + hook overlay    │    │
@@ -110,31 +109,27 @@ Concretely:
    one per day at a time you choose, via Upload-Post's `scheduled_date`. TikTok lands as a
    draft by default so you can finish in-app.
 
-### Choosing the model
+### The model
 
-Settings → *Caption writer* picks the on-device model that finds the moments and writes
-the captions:
+One small on-device LLM does all the language work — it finds the moments **and** writes
+every platform's captions in the same pass:
 
 | Model | Role | Notes |
 |-------|------|-------|
-| **Qwen 3.5 9B** | Director + inline captions | **Default on 16 GB Macs** — fits in RAM, one pass, huge context window. |
-| **Gemma 4 12B** | Director + inline captions | **Default on 24 GB+ Macs** — strongest writing, but ~13 GB resident, so it swaps on 16 GB. |
-| **Gemma 4 E4B** | Clip-watching copywriter | Multimodal — *watches* each clip (frames + audio) and captions it in a separate pass. Also the model used by *Caption a short*. |
+| **Gemma 4 E2B** | Director + inline captions | A ~2.3 B-effective gemma-4 model, ~1 GB on disk. 128 K context, so a full long-video transcript fits in one pass. Runs comfortably on 16 GB with room for the optional vision pass. |
 
-The default is **chosen to fit your Mac's memory**: 16 GB machines get Qwen 3.5 9B (≈6 GB,
-no swapping); 24 GB+ machines get the stronger Gemma 4 12B. You can override the pick in
-Settings — but on 16 GB the 12B will swap and run slowly. The model downloads once on first
-use, then everything runs offline.
+It downloads once on first use, then everything runs offline. No model picker, no
+per-machine split — the same lean model runs everywhere.
 
 ## Requirements
 
 - **Apple Silicon** Mac (M1 or later), **macOS 15+**.
-- **Memory:** **16 GB RAM minimum**, **24 GB+ recommended**. On 16 GB the Director defaults to
-  Qwen 3.5 9B (≈6 GB) and models load one-at-a-time so nothing swaps; at 24 GB+ Clipmunk runs the
-  stronger Gemma 4 12B Director and can keep both it and the copywriter resident at once.
-- **Disk:** ~**12–14 GB free** for the on-device models downloaded on first run
-  (Gemma 4 12B ≈ 7 GB, Gemma 4 E4B ≈ 5 GB, WhisperKit large-v3 ≈ 1.5 GB), plus working
-  space for the videos you process. Models download once from Hugging Face, then run offline.
+- **Memory:** **16 GB RAM minimum**. The Director (Gemma 4 E2B) and the optional Marlin-2B
+  vision pass load one-at-a-time, so nothing swaps on 16 GB.
+- **Disk:** ~**6 GB free** for the on-device models downloaded on first run
+  (Gemma 4 E2B ≈ 3.6 GB, WhisperKit large-v3 ≈ 1.5 GB), plus the optional Marlin-2B vision
+  model (~2.5 GB) and working space for the videos you process. Models download once from
+  Hugging Face, then run offline.
 
 ## Install
 
@@ -148,8 +143,8 @@ so it opens normally — no Gatekeeper warnings and no Terminal workaround neede
 ### First run
 
 - Clipmunk downloads the models it needs on first use, with a visible progress bar:
-  the **Director** (Gemma 4 12B ≈ 7 GB, or Qwen 3.5 9B ≈ 5 GB) and **WhisperKit
-  large-v3** for transcription. Happens once, then it works offline.
+  the **Director** (Gemma 4 E2B ≈ 3.6 GB) and **WhisperKit large-v3** for transcription.
+  Happens once, then it works offline.
 - Open **Settings** (⌘,) and add your [Upload-Post](https://upload-post.com) **API key**
   and **profile name** (the one from *Manage Users*, not your social handle).
 - Optionally set a caption language and paste a few of your own captions as style
@@ -201,8 +196,8 @@ Pre-release tags (e.g. `v0.1.0-rc1`) publish as GitHub **pre-releases**; final
 |------------------|-----------------------------------------------------------------------|
 | UI               | SwiftUI · AVKit                                                       |
 | Transcription    | [WhisperKit](https://github.com/argmaxinc/WhisperKit) `large-v3` (Metal/GPU) |
-| Director model   | Gemma 4 12B or Qwen 3.5 9B (4-bit), runs as a text LLM via MLX        |
-| Clip-watcher     | Gemma 4 E4B (4-bit), text + vision + audio                           |
+| Director model   | Gemma 4 E2B (4-bit), runs as a text LLM via MLX — finds moments + writes captions |
+| Vision map (opt) | Marlin-2B (8-bit) — watches the footage, hands the Director an on-screen track |
 | Inference        | [MLX](https://github.com/ml-explore/mlx-swift) (Metal, Neural Engine) |
 | Gemma 4 runtime  | [gemma-4-swift-mlx](https://github.com/VincentGourbin/gemma-4-swift-mlx), vendored in `Vendor/` |
 | Vertical reframe | Vision (face detection) + AVFoundation (transform ramps / Core Image)|
@@ -224,9 +219,8 @@ sent to Upload-Post over HTTPS when you publish. It is never written into the re
 
 ## Known limitations
 
-- The **Director** runs a large model on-device. On an M1 Pro, a ~2-minute video takes a
+- The **Director** (Gemma 4 E2B) runs on-device. On an M1 Pro, a ~2-minute video takes a
   few minutes end-to-end (transcription + generation). Faster Macs (M3/M4) are quicker.
-- *Caption a short* uses Gemma 4 E4B, whose audio encoder hears the **first 30 seconds**.
 - One video at a time — no history, no batch processing. By design, for now.
 - Upload-Post free tier limits monthly uploads. One publish to three networks counts as
   three.
@@ -240,7 +234,6 @@ sent to Upload-Post over HTTPS when you publish. It is never written into the re
 - **Vincent Gourbin** for [gemma-4-swift-mlx](https://github.com/VincentGourbin/gemma-4-swift-mlx),
   the native Gemma 4 runtime we vendor.
 - **Argmax** for [WhisperKit](https://github.com/argmaxinc/WhisperKit).
-- **Alibaba** for the Qwen 3.5 open weights.
 - **Upload-Post** for the cross-platform publishing API.
 
 ## License

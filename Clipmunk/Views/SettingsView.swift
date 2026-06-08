@@ -74,41 +74,21 @@ struct SettingsView: View {
                 pipelineRole(
                     step: "1", icon: "waveform",
                     title: "Transcribe",
-                    model: "WhisperKit · large-v3-turbo",
+                    model: ModelCatalog.transcription.displayName,
                     detail: "Turns the audio into text. Runs only when the video has no .srt/.vtt next to it.",
                     status: nil)
                 pipelineRole(
                     step: "2", icon: "wand.and.stars",
                     title: "Find the viral moments",
-                    model: settings.copywriterModel.directorProfile.displayName,
-                    detail: "Reads the whole transcript and picks the best clips. Follows your model choice below.",
+                    model: ChatModelProfile.director.displayName,
+                    detail: "Reads the whole transcript and picks the best clips.",
                     status: directorStatus)
                 pipelineRole(
                     step: "3", icon: "text.bubble",
                     title: "Write the captions",
-                    model: settings.copywriterModel.displayName,
-                    detail: "You choose this one ↓",
-                    status: settings.copywriterModel.watchesClips ? modelStatus : directorStatus)
-            }
-
-            Section("Caption writer") {
-                Picker("Model", selection: $settings.copywriterModel) {
-                    ForEach(AppSettings.CopywriterModel.allCases) { model in
-                        Text(model.displayName).tag(model)
-                    }
-                }
-                Text(settings.copywriterModel.tagline)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text("Picks the model that finds the moments and writes the captions for shorts cut from a long video. Captioning a single short video always uses Gemma E4B (it watches the clip directly).")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                if settings.copywriterModel.watchesClips && modelManager.systemRAMGB < 24 {
-                    Label("On this Mac, Clipmunk frees the moment-finder before captioning to stay within memory.",
-                          systemImage: "memorychip")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                    model: ChatModelProfile.director.displayName,
+                    detail: "The same model writes all three platforms' captions in the same pass.",
+                    status: directorStatus)
             }
 
             Section("Animated captions") {
@@ -224,16 +204,6 @@ struct SettingsView: View {
             }
         }
         .padding(.vertical, 2)
-    }
-
-    private var modelStatus: String {
-        switch modelManager.phase {
-        case .idle:                          "Not loaded"
-        case .downloading(let fraction, _):  "Downloading \(Int(fraction * 100))%"
-        case .loading:                       "Loading…"
-        case .ready:                         "Ready"
-        case .failed:                        "Failed to load"
-        }
     }
 
     private var directorStatus: String {

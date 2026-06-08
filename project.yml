@@ -113,6 +113,94 @@ targets:
         MACOSX_DEPLOYMENT_TARGET: "15.0"
         GENERATE_INFOPLIST_FILE: YES
 
+  # Developer-only headless probe for the Director (Gemma 4 E2B). Loads the real
+  # MomentFinderService and runs one moment-finding + inline-caption pass over a
+  # transcript — no GUI, so it validates model loadability + JSON output from any
+  # shell. Pick the model with CLIPMUNK_DIRECTOR_MODEL to A/B unsloth vs standard.
+  director-probe:
+    type: tool
+    platform: macOS
+    sources:
+      - path: DirectorProbe
+      - path: Clipmunk/Services/MomentFinderService.swift
+      - path: Clipmunk/Services/ChatModelProfile.swift
+      - path: Clipmunk/Services/ModelCatalog.swift
+      - path: Clipmunk/Services/MemoryPolicy.swift
+      - path: Clipmunk/Services/PromptBuilder.swift
+      - path: Clipmunk/Services/JSONVariantParser.swift
+      - path: Clipmunk/Models/ClipCandidate.swift
+      - path: Clipmunk/Models/PostVariant.swift
+      - path: Clipmunk/Models/String+Trimmed.swift
+    dependencies:
+      - package: Gemma4Swift
+        product: Gemma4Swift
+      - package: mlx-swift-lm
+        product: MLXVLM
+      - package: mlx-swift-lm
+        product: MLXLMCommon
+      - package: mlx-swift-lm
+        product: MLXHuggingFace
+      - package: swift-huggingface
+        product: HuggingFace
+      - package: swift-transformers
+        product: Tokenizers
+    settings:
+      base:
+        PRODUCT_NAME: director-probe
+        SWIFT_VERSION: "6.0"
+        MACOSX_DEPLOYMENT_TARGET: "15.0"
+        GENERATE_INFOPLIST_FILE: YES
+
+  # Developer-only headless end-to-end shorts pipeline. Runs the REAL app path
+  # without the GUI (transcribe → E2B moments+captions → cut → reframe+captions
+  # render) and writes finished sample .mp4s — the only way to produce real output
+  # videos in a headless shell, since the app's SwiftUI scene needs a window session.
+  shorts-probe:
+    type: tool
+    platform: macOS
+    sources:
+      - path: ShortsProbe
+      - path: Clipmunk/Services/TranscriptionService.swift
+      - path: Clipmunk/Services/MomentFinderService.swift
+      - path: Clipmunk/Services/ChatModelProfile.swift
+      - path: Clipmunk/Services/ModelCatalog.swift
+      - path: Clipmunk/Services/MemoryPolicy.swift
+      - path: Clipmunk/Services/PromptBuilder.swift
+      - path: Clipmunk/Services/JSONVariantParser.swift
+      - path: Clipmunk/Services/MediaExtractor.swift
+      - path: Clipmunk/Services/VerticalReframer.swift
+      - path: Clipmunk/Services/VideoOverlayRenderer.swift
+      - path: Clipmunk/Services/CaptionRenderer.swift
+      - path: Clipmunk/Services/AudioActivityAnalyzer.swift
+      - path: Clipmunk/Services/CaptionScript.swift
+      - path: Clipmunk/Models/ClipCandidate.swift
+      - path: Clipmunk/Models/PostVariant.swift
+      - path: Clipmunk/Models/WordStamp.swift
+      - path: Clipmunk/Models/VideoJob.swift
+      - path: Clipmunk/Models/CaptionStyle.swift
+      - path: Clipmunk/Models/String+Trimmed.swift
+    dependencies:
+      - package: Gemma4Swift
+        product: Gemma4Swift
+      - package: mlx-swift-lm
+        product: MLXVLM
+      - package: mlx-swift-lm
+        product: MLXLMCommon
+      - package: mlx-swift-lm
+        product: MLXHuggingFace
+      - package: swift-huggingface
+        product: HuggingFace
+      - package: swift-transformers
+        product: Tokenizers
+      - package: WhisperKit
+        product: WhisperKit
+    settings:
+      base:
+        PRODUCT_NAME: shorts-probe
+        SWIFT_VERSION: "6.0"
+        MACOSX_DEPLOYMENT_TARGET: "15.0"
+        GENERATE_INFOPLIST_FILE: YES
+
   # Developer-only command-line probe. Runs the real generation path
   # (MediaExtractor → Gemma4Engine → JSONVariantParser) headlessly.
   clipmunk-probe:

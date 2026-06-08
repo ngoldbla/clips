@@ -11,70 +11,6 @@ import Observation
 @Observable
 final class AppSettings {
 
-    /// Which model finds the moments and writes each clip's captions. Two of the
-    /// options (Gemma 4 12B, Qwen 3.5 9B) are text models that double as the
-    /// "Director" and write captions inline in the same pass; the third (Gemma 4
-    /// E4B) is a multimodal copywriter that watches each clip separately.
-    enum CopywriterModel: String, CaseIterable, Identifiable, Sendable {
-        case qwen35_4b = "qwen4b"
-        case qwen35_9b = "qwen"
-        case gemma12B = "gemma12b"
-        case gemmaE4B = "gemma"
-
-        var id: String { rawValue }
-
-        var displayName: String {
-            switch self {
-            case .qwen35_4b: "Qwen 3.5 4B"
-            case .qwen35_9b: "Qwen 3.5 9B"
-            case .gemma12B:  "Gemma 4 12B"
-            case .gemmaE4B:  "Gemma 4 E4B · 4-bit"
-            }
-        }
-
-        var tagline: String {
-            switch self {
-            case .qwen35_4b: "Finds the moments AND writes all three captions in one pass — the leanest, fastest fit for 16 GB (~8 GB peak), and matched the bigger models on quality."
-            case .qwen35_9b: "Finds the moments AND writes all three captions in one pass — a step up in size, one model, keeps the spoken language."
-            case .gemma12B:  "Finds the moments AND writes all three captions in one pass — strongest writing, but ~13 GB resident so it swaps on 16 GB."
-            case .gemmaE4B:  "Watches each clip (frames + audio) and captions it in a separate pass per clip."
-            }
-        }
-
-        /// The text model that finds the moments. The three inline options are
-        /// their own Director; the clip-watching option still needs a Director,
-        /// for which we use the strongest text model (Gemma 4 12B).
-        var directorProfile: ChatModelProfile {
-            switch self {
-            case .qwen35_4b:           .qwen35_4b
-            case .qwen35_9b:           .qwen35_9b
-            case .gemma12B, .gemmaE4B: .gemma12B
-            }
-        }
-
-        /// True when the Director writes the captions in the same pass (so no
-        /// separate per-clip captioning step runs).
-        var usesInlineCaptions: Bool {
-            switch self {
-            case .qwen35_4b, .qwen35_9b, .gemma12B: true
-            case .gemmaE4B:                         false
-            }
-        }
-
-        /// True for the multimodal Gemma E4B path that watches each clip — the
-        /// only option that loads a second model alongside the Director.
-        var watchesClips: Bool { self == .gemmaE4B }
-
-        /// First-launch default, sized to this Mac's memory. The 12B Director needs
-        /// ~13 GB resident and swaps hard on 16 GB; Qwen 3.5 4B (~8 GB peak) fits with
-        /// room to spare, prefills ~44% faster, and matched-or-beat the larger models
-        /// in head-to-head quality judging — so it's the 16 GB default. 24 GB+ gets
-        /// the stronger 12B. Only used when the user hasn't picked explicitly.
-        static var ramAdaptiveDefault: CopywriterModel {
-            MemoryPolicy.canKeepBothResident ? .gemma12B : .qwen35_4b
-        }
-    }
-
     /// Upload-Post API key. Mirrored to `UserDefaults` on every change.
     var apiKey: String {
         didSet { persistAPIKey() }
@@ -101,11 +37,6 @@ final class AppSettings {
     /// publishing directly (`post_mode=MEDIA_UPLOAD`). On by default.
     var tiktokAsDraft: Bool {
         didSet { defaults.set(tiktokAsDraft, forKey: Keys.tiktokDraft) }
-    }
-
-    /// The Copywriter model used to caption generated shorts.
-    var copywriterModel: CopywriterModel {
-        didSet { defaults.set(copywriterModel.rawValue, forKey: Keys.copywriter) }
     }
 
     /// Default for burning an AI text hook into the top of each generated short.
@@ -185,12 +116,6 @@ final class AppSettings {
         self.styleExamples = defaults.string(forKey: Keys.style) ?? ""
         // Defaults to true on first launch (no stored value yet).
         self.tiktokAsDraft = defaults.object(forKey: Keys.tiktokDraft) as? Bool ?? true
-        // One text model finds the moments and writes the captions in the same
-        // pass, keeping the spoken language. The first-launch default is sized to
-        // this Mac's RAM (Qwen 3.5 9B on 16 GB, Gemma 4 12B on 24 GB+); an explicit
-        // pick in Settings always wins.
-        self.copywriterModel = defaults.string(forKey: Keys.copywriter)
-            .flatMap(CopywriterModel.init) ?? CopywriterModel.ramAdaptiveDefault
         // Default on — the user opted into the hook-overlay feature.
         self.burnHookOverlay = defaults.object(forKey: Keys.burnHook) as? Bool ?? true
         // Default on — horizontal clips should become vertical shorts.
@@ -223,7 +148,6 @@ final class AppSettings {
         static let language    = "clipmunk.languageOverride"
         static let style       = "clipmunk.styleExamples"
         static let tiktokDraft = "clipmunk.tiktokAsDraft"
-        static let copywriter  = "clipmunk.copywriterModel"
         static let burnHook    = "clipmunk.burnHookOverlay"
         static let reframe     = "clipmunk.reframeToVertical"
         static let burnCaptions = "clipmunk.burnCaptions"
