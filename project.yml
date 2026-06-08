@@ -28,11 +28,19 @@ packages:
   swift-transformers:
     url: https://github.com/huggingface/swift-transformers
     from: "1.1.6"
-  # On-device transcription, used only as a fallback when a long video has no
-  # .srt/.vtt alongside it. Lazy: the Whisper model never downloads otherwise.
+  # On-device transcription. WhisperKit is now the FALLBACK STT (Parakeet is the
+  # default on constrained Macs); still the non-English path. Bumped 0.9 -> 1.0
+  # because speech-swift requires WhisperKit >= 1.0.0 (disjoint with 0.9.x).
   WhisperKit:
     url: https://github.com/argmaxinc/WhisperKit
-    from: "0.9.0"
+    from: "1.0.0"
+  # Parakeet TDT (STT) + Kokoro-82M (TTS) as CoreML/ANE via one package
+  # (internally "Qwen3Speech"). Pinned exact: it ships no upstream Package.resolved,
+  # so this is the only way to keep the resolved graph reproducible. We import only
+  # ParakeetStreamingASR + KokoroTTS + AudioCommon.
+  speech-swift:
+    url: https://github.com/soniqo/speech-swift
+    exactVersion: "0.0.20"
 
 targets:
   Clipmunk:
@@ -55,6 +63,12 @@ targets:
         product: Tokenizers
       - package: WhisperKit
         product: WhisperKit
+      - package: speech-swift
+        product: ParakeetStreamingASR
+      - package: speech-swift
+        product: KokoroTTS
+      - package: speech-swift
+        product: AudioCommon
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.github.ngoldbla.Clipmunk
@@ -161,6 +175,8 @@ targets:
     sources:
       - path: ShortsProbe
       - path: Clipmunk/Services/TranscriptionService.swift
+      - path: Clipmunk/Services/ASREngine.swift
+      - path: Clipmunk/Services/WhisperKitEngine.swift
       - path: Clipmunk/Services/MomentFinderService.swift
       - path: Clipmunk/Services/ChatModelProfile.swift
       - path: Clipmunk/Services/ModelCatalog.swift
@@ -168,6 +184,8 @@ targets:
       - path: Clipmunk/Services/PromptBuilder.swift
       - path: Clipmunk/Services/JSONVariantParser.swift
       - path: Clipmunk/Services/MediaExtractor.swift
+      - path: Clipmunk/Services/AudioResampler.swift
+      - path: Clipmunk/Services/ParakeetEngine.swift
       - path: Clipmunk/Services/VerticalReframer.swift
       - path: Clipmunk/Services/VideoOverlayRenderer.swift
       - path: Clipmunk/Services/CaptionRenderer.swift
@@ -194,6 +212,10 @@ targets:
         product: Tokenizers
       - package: WhisperKit
         product: WhisperKit
+      - package: speech-swift
+        product: ParakeetStreamingASR
+      - package: speech-swift
+        product: AudioCommon
     settings:
       base:
         PRODUCT_NAME: shorts-probe
