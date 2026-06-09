@@ -58,6 +58,18 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
+      - name: Cache the MLX-gate model (Hugging Face hub)
+        # The MLX launch gate downloads the Gemma E2B Director (~1.5 GB) on first
+        # run; cache it so later runs restore in seconds and leave more of the job
+        # budget for notarization. Saved even when a later step fails, so a healthy
+        # download survives a transient Apple Notary outage.
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-mlx-gate-${{ hashFiles('Clipmunk/Services/ModelCatalog.swift', 'Clipmunk/Services/ChatModelProfile.swift') }}
+          restore-keys: |
+            hf-mlx-gate-
+
       - name: Build (Release, Developer ID, hardened runtime)
         run: |
           set -euo pipefail
