@@ -26,6 +26,11 @@
 	<string>public.app-category.video</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>Open source under the Apache License 2.0.</string>
+	<!-- HF read token for gated model repos (Marlin-2B). Injected at build time
+	     from the HF_DOWNLOAD_TOKEN build setting (CI secret); empty on dev builds,
+	     where HFToken falls back to env / ~/.cache/huggingface/token. -->
+	<key>HFDownloadToken</key>
+	<string>$(HF_DOWNLOAD_TOKEN)</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSSupportsAutomaticTermination</key>

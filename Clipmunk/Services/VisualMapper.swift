@@ -90,7 +90,8 @@ final class VisualMapper {
         guard container == nil, !isBusy else { return }
         phase = .downloading(fraction: 0)
         do {
-            let downloader = ClipmunkModelDownloader()
+            // Marlin-2B is a gated HF repo (gated=auto) → needs a read token.
+            let downloader = ClipmunkModelDownloader(token: HFToken.resolve())
             let localDir = try await downloader.download(
                 id: Self.effectiveModelID,
                 revision: nil,

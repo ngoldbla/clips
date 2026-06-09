@@ -92,6 +92,7 @@ jobs:
             CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="Developer ID Application" \
             DEVELOPMENT_TEAM="${{ secrets.APPLE_TEAM_ID }}" \
             OTHER_CODE_SIGN_FLAGS="--timestamp --options runtime" \
+            HF_DOWNLOAD_TOKEN="${{ secrets.HF_DOWNLOAD_TOKEN }}" \
             $VERSION_ARGS \
             clean build
           APP="build/Build/Products/Release/$APP_NAME.app"
@@ -107,6 +108,20 @@ jobs:
           if grep -q 'get-task-allow' /tmp/ents.plist; then
             echo "::error::get-task-allow present in entitlements — would fail notarization"; exit 1
           fi
+          # Guard 3 (gated-model access): the mandatory Marlin-2B vision repo is
+          # gated on Hugging Face, so the app needs an embedded read token. Verify
+          # the token was baked into the bundle AND that it actually grants Marlin
+          # access — this is the exact failure (anonymous 401) that shipped in v0.1.0.
+          TOK="$(/usr/libexec/PlistBuddy -c 'Print :HFDownloadToken' "$APP/Contents/Info.plist" 2>/dev/null || true)"
+          if [ -z "$TOK" ]; then
+            echo "::error::no HFDownloadToken embedded — set the HF_DOWNLOAD_TOKEN secret; the gated Marlin-2B download will 401"; exit 1
+          fi
+          MARLIN_CODE="$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOK" \
+            'https://huggingface.co/junwatu/Marlin-2B-MLX-8bit/resolve/main/chat_template.jinja')"
+          if [ "$MARLIN_CODE" != "200" ]; then
+            echo "::error::embedded token cannot access gated Marlin-2B (HTTP $MARLIN_CODE) — token invalid or lacks access"; exit 1
+          fi
+          echo "==> embedded HF token grants Marlin-2B access (HTTP 200)"
 
       - name: MLX launch gate (signed+hardened Director must actually infer)
         # Notarization proves the app is *signed* correctly — NOT that it *runs*.
