@@ -1,0 +1,26 @@
+name: Notary health
+
+# Ops utility: asks Apple's Notary service directly whether it is completing
+# submissions right now. Distinguishes "Apple is stalled" (submissions stuck
+# In Progress) from a real signing rejection, so you know whether to retry a
+# release or wait for Apple to recover. Read-only — signs nothing, publishes
+# nothing. Run from the Actions tab (or `gh workflow run "Notary health"`).
+on:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: macos-26
+    timeout-minutes: 15
+    steps:
+      - name: notarytool history (are recent submissions completing?)
+        env:
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          KEY="$RUNNER_TEMP/notary.p8"; printf '%s' "$NOTARY_KEY_P8" > "$KEY"
+          echo "=== recent submission history (status column is the signal) ==="
+          xcrun notarytool history \
+            --key "$KEY" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" 2>&1 | head -80

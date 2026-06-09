@@ -15,9 +15,11 @@ jobs:
   build-dmg:
     runs-on: macos-26
     # Hard ceiling so a stalled Apple Notary service can never burn the full
-    # 6-hour default again. A normal run (build + 2 notarizations) is well under
-    # this; notarize.sh adds its own per-attempt --timeout + retries underneath.
-    timeout-minutes: 120
+    # 6-hour default again. A healthy run (build + MLX gate + 2 notarizations) is
+    # well under this; during an Apple Notary stall the job fails at the first
+    # notarize once notarize.sh's NOTARIZE_DEADLINE_MIN (45m) elapses, which fits
+    # under this ceiling even with a cold model cache.
+    timeout-minutes: 150
     env:
       APP_NAME: Clipmunk
       SCHEME: Clipmunk

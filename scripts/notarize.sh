@@ -1,23 +1,27 @@
 #!/usr/bin/env bash
-# Notarize a .app .zip or a .dmg with a per-attempt timeout + retries.
+# Notarize a .app .zip or a .dmg: upload ONCE, then patiently poll that same
+# submission until Apple reaches a terminal state or we hit a total deadline.
 #
-# Why: `xcrun notarytool submit --wait` has no internal cap. When Apple's Notary
-# service stalls (submission stuck at "In Progress…" — a transient outage), the
-# bare `--wait` hangs until the CI job's 6-hour limit kills it. That is exactly
-# how the v0.0.1 Release run failed. Here we cap each wait with `--timeout` and
-# resubmit a few times, so an Apple-side stall fails fast and self-heals instead
-# of burning the whole job. A genuine rejection (status: Invalid) is NOT retried —
-# we dump the notary log and fail immediately.
+# Why not `notarytool submit --wait` with a timeout + resubmit?
+#   `--wait` has no internal cap, so a stalled Apple Notary service (submission
+#   stuck at "In Progress…") hangs until the CI job's limit kills it — that is
+#   how the v0.0.1 run burned 6 hours. The obvious fix (cap each `--wait` with
+#   `--timeout` and resubmit) is *also* wrong when Apple is merely backlogged:
+#   each timeout ABANDONS a submission Apple is still processing and enqueues a
+#   fresh one at the back of the queue, so it can never catch up (this is what
+#   failed both 2026-06-08/09 dry-runs — three 25-min waits, none completing).
+#
+#   Instead: upload once (`--no-wait`), capture the submission id, and poll
+#   `notarytool info` ourselves for up to NOTARIZE_DEADLINE_MIN minutes. The one
+#   submission gets the full budget, so a slow-but-working notary succeeds. Only
+#   the UPLOAD is retried (genuine network/5xx), never the wait. A terminal
+#   Invalid/Rejected is surfaced with its log and fails immediately.
 #
 # Usage:   scripts/notarize.sh <path-to-zip-or-dmg>
-# Env:     NOTARY_KEY_P8, NOTARY_KEY_ID, NOTARY_ISSUER_ID   (required)
-#          NOTARIZE_ATTEMPTS (default 3), NOTARIZE_TIMEOUT (default 25m)
-#
-# Tuning note: a HEALTHY notarization completes in well under 10 min, so the
-# per-attempt timeout only ever fires during an Apple Notary incident (the
-# service stalls at "In Progress…", as it did on 2026-06-08). A shorter timeout
-# therefore only makes a real outage fail-and-retry faster — 25m × 3 ≈ 75m worst
-# case stays under the job's timeout-minutes — with no effect on the healthy path.
+# Env:     NOTARY_KEY_P8, NOTARY_KEY_ID, NOTARY_ISSUER_ID        (required)
+#          NOTARIZE_DEADLINE_MIN (default 45)  total minutes to wait on one submission
+#          NOTARIZE_POLL_SEC     (default 20)  seconds between status polls
+#          NOTARIZE_UPLOAD_TRIES (default 3)   retries for the upload step only
 set -euo pipefail
 
 ARTIFACT="${1:?usage: notarize.sh <path-to-zip-or-dmg>}"
@@ -27,37 +31,59 @@ ARTIFACT="${1:?usage: notarize.sh <path-to-zip-or-dmg>}"
 
 KEY="${RUNNER_TEMP:-/tmp}/notary-key.p8"
 printf '%s' "$NOTARY_KEY_P8" > "$KEY"
+AUTH=(--key "$KEY" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID")
 
-ATTEMPTS="${NOTARIZE_ATTEMPTS:-3}"
-TIMEOUT="${NOTARIZE_TIMEOUT:-25m}"
+DEADLINE_MIN="${NOTARIZE_DEADLINE_MIN:-45}"
+POLL_SEC="${NOTARIZE_POLL_SEC:-20}"
+UPLOAD_TRIES="${NOTARIZE_UPLOAD_TRIES:-3}"
 
-for attempt in $(seq 1 "$ATTEMPTS"); do
-  echo "==> notarizing $(basename "$ARTIFACT") (attempt ${attempt}/${ATTEMPTS}, per-attempt timeout ${TIMEOUT})"
+# Extract a top-level JSON string field without depending on jq.
+json_field() { /usr/bin/python3 -c 'import sys,json
+try: print(json.load(sys.stdin).get(sys.argv[1],""))
+except Exception: print("")' "$1"; }
+
+# 1. Upload once. Retry ONLY the upload itself (network / 5xx), not the wait.
+id=""
+for t in $(seq 1 "$UPLOAD_TRIES"); do
+  echo "==> uploading $(basename "$ARTIFACT") to Apple Notary (upload ${t}/${UPLOAD_TRIES})"
   set +e
-  OUT="$(xcrun notarytool submit "$ARTIFACT" \
-    --key "$KEY" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" \
-    --wait --timeout "$TIMEOUT" 2>&1)"
+  OUT="$(xcrun notarytool submit "$ARTIFACT" "${AUTH[@]}" --no-wait --output-format json 2>&1)"
   code=$?
   set -e
   echo "$OUT"
-
-  if [ "$code" -eq 0 ] && echo "$OUT" | grep -q "status: Accepted"; then
-    echo "==> notarization accepted"
-    exit 0
-  fi
-
-  # A terminal rejection won't change on retry — surface the reason and stop.
-  if echo "$OUT" | grep -q "status: Invalid"; then
-    id="$(echo "$OUT" | awk '/id:/{print $2; exit}')"
-    echo "==> notarization REJECTED (status: Invalid) — fetching log for ${id}"
-    [ -n "$id" ] && xcrun notarytool log "$id" \
-      --key "$KEY" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" || true
-    exit 1
-  fi
-
-  echo "==> attempt ${attempt} did not complete (timeout or transient error); retrying in 30s…"
+  id="$(printf '%s' "$OUT" | json_field id)"
+  [ "$code" -eq 0 ] && [ -n "$id" ] && break
+  echo "==> upload attempt ${t} failed; retrying in 30s…"
   sleep 30
 done
+[ -n "$id" ] || { echo "==> could not upload to Apple Notary after ${UPLOAD_TRIES} tries"; exit 1; }
+echo "==> submission id: $id — polling for up to ${DEADLINE_MIN} min"
 
-echo "==> notarization did not complete after ${ATTEMPTS} attempts (Apple Notary likely stalled)"
-exit 1
+# 2. Poll the SAME submission until terminal or deadline.
+deadline=$(( $(date +%s) + DEADLINE_MIN * 60 ))
+while :; do
+  set +e
+  INFO="$(xcrun notarytool info "$id" "${AUTH[@]}" --output-format json 2>&1)"
+  set -e
+  status="$(printf '%s' "$INFO" | json_field status)"
+
+  case "$status" in
+    Accepted)
+      echo "==> notarization accepted"
+      exit 0
+      ;;
+    Invalid|Rejected)
+      echo "==> notarization $status — fetching log for ${id}"
+      xcrun notarytool log "$id" "${AUTH[@]}" || true
+      exit 1
+      ;;
+  esac
+
+  now=$(date +%s)
+  if [ "$now" -ge "$deadline" ]; then
+    echo "==> still '${status:-unknown}' after ${DEADLINE_MIN} min — Apple Notary is stalled (not a signing problem); try again once Apple's Notary service recovers"
+    exit 1
+  fi
+  echo "   status: ${status:-unknown}  ($(( (deadline - now) / 60 )) min left)"
+  sleep "$POLL_SEC"
+done
