@@ -11,7 +11,13 @@
 #
 # Usage:   scripts/notarize.sh <path-to-zip-or-dmg>
 # Env:     NOTARY_KEY_P8, NOTARY_KEY_ID, NOTARY_ISSUER_ID   (required)
-#          NOTARIZE_ATTEMPTS (default 3), NOTARIZE_TIMEOUT (default 45m)
+#          NOTARIZE_ATTEMPTS (default 3), NOTARIZE_TIMEOUT (default 25m)
+#
+# Tuning note: a HEALTHY notarization completes in well under 10 min, so the
+# per-attempt timeout only ever fires during an Apple Notary incident (the
+# service stalls at "In Progress…", as it did on 2026-06-08). A shorter timeout
+# therefore only makes a real outage fail-and-retry faster — 25m × 3 ≈ 75m worst
+# case stays under the job's timeout-minutes — with no effect on the healthy path.
 set -euo pipefail
 
 ARTIFACT="${1:?usage: notarize.sh <path-to-zip-or-dmg>}"
@@ -23,7 +29,7 @@ KEY="${RUNNER_TEMP:-/tmp}/notary-key.p8"
 printf '%s' "$NOTARY_KEY_P8" > "$KEY"
 
 ATTEMPTS="${NOTARIZE_ATTEMPTS:-3}"
-TIMEOUT="${NOTARIZE_TIMEOUT:-45m}"
+TIMEOUT="${NOTARIZE_TIMEOUT:-25m}"
 
 for attempt in $(seq 1 "$ATTEMPTS"); do
   echo "==> notarizing $(basename "$ARTIFACT") (attempt ${attempt}/${ATTEMPTS}, per-attempt timeout ${TIMEOUT})"
