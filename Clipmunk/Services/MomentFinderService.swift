@@ -64,7 +64,9 @@ final class MomentFinderService {
         phase = .downloading(fraction: 0)
 
         do {
-            let downloader = ClipmunkModelDownloader()
+            // Director repo is public; pass the token anyway so a gated mirror
+            // (or a future gated Director) keeps working.
+            let downloader = ClipmunkModelDownloader(token: HFToken.resolve())
             let localDir = try await downloader.download(
                 id: Self.effectiveModelID(profile.modelID),
                 revision: nil,

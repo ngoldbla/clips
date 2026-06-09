@@ -90,6 +90,11 @@ targets:
         COMBINE_HIDPI_IMAGES: YES
         ENABLE_PREVIEWS: YES
         MACOSX_DEPLOYMENT_TARGET: "15.0"
+        # HF read token for gated repos (Marlin-2B), substituted into Info.plist's
+        # HFDownloadToken. Empty by default (dev builds download ungated models
+        # anonymously); CI overrides it from the HF_DOWNLOAD_TOKEN secret on the
+        # xcodebuild command line. Never commit a real token here (public repo).
+        HF_DOWNLOAD_TOKEN: ""
       configs:
         # Local/dev builds stay unsigned so no certificate is required.
         Debug:
@@ -141,6 +146,7 @@ targets:
     sources:
       - path: DirectorProbe
       - path: Clipmunk/Services/MomentFinderService.swift
+      - path: Clipmunk/Services/HFToken.swift
       - path: Clipmunk/Services/ClipmunkModelDownloader.swift
       - path: Clipmunk/Services/ChatModelProfile.swift
       - path: Clipmunk/Services/ModelCatalog.swift
@@ -183,6 +189,7 @@ targets:
       - path: Clipmunk/Services/ASREngine.swift
       - path: Clipmunk/Services/WhisperKitEngine.swift
       - path: Clipmunk/Services/MomentFinderService.swift
+      - path: Clipmunk/Services/HFToken.swift
       - path: Clipmunk/Services/ClipmunkModelDownloader.swift
       - path: Clipmunk/Services/ChatModelProfile.swift
       - path: Clipmunk/Services/ModelCatalog.swift
@@ -244,6 +251,7 @@ targets:
       - path: Clipmunk/Services/ParakeetEngine.swift
       - path: Clipmunk/Services/AudioResampler.swift
       - path: Clipmunk/Services/MomentFinderService.swift
+      - path: Clipmunk/Services/HFToken.swift
       - path: Clipmunk/Services/ClipmunkModelDownloader.swift
       - path: Clipmunk/Services/ChatModelProfile.swift
       - path: Clipmunk/Services/ModelCatalog.swift
